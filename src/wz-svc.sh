@@ -191,17 +191,16 @@ start_sockd()
         return 1
     fi
 
-    log_info "starting service 'sockd'..."
+    # Полностью очищаем старые системные конфиги и ссылки во избежание коллизий
+    rm -f /etc/sockd.conf
 
-    # Удаляем старые конфигурационные файлы и ссылки
-    rm -f /etc/sockd.conf /opt/webzapret/config/sockd.conf
-
-    # Генерируем отрендеренный рабочий конфиг прямо в системный путь /etc/
+    # Вызываем встроенный генератор проекта и пишем результат прямо в системный путь
     render_sockd_conf > /etc/sockd.conf
 
-    # Запускаем Dante из стандартного пути без лишних флагов
+    # Запускаем Dante
     spawn_svc sockd "" "$bin"
 }
+
 
 
 start_redsocks()
