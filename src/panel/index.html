@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>web_zapret2 &mdash; panel</title>
+<style>
+:root { --bg:#0f1622; --card:#17202e; --fg:#e6edf3; --mut:#8b96a3; --acc:#4f9cf9;
+        --ok:#3fb950; --bad:#f85149; --mono:ui-monospace,Consolas,monospace; }
+* { box-sizing:border-box; }
+body { background:var(--bg); color:var(--fg); font:14px/1.45 system-ui,sans-serif;
+       margin:0; padding:24px; }
+h1 { font-size:20px; color:var(--acc); }
+.card { background:var(--card); border:1px solid #26303e; border-radius:10px;
+        padding:14px 18px; margin:14px 0; }
+label { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.05em; }
+.mono { font:12px/1.4 var(--mono); white-space:pre-wrap; }
+.dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+button { background:#22303f; color:var(--fg); border:1px solid #33455b;
+         border-radius:7px; padding:7px 14px; cursor:pointer; }
+button:hover { background:#2a3c4e; }
+button.primary { background:var(--acc); color:#fff; border-color:var(--acc); }
+table { border-collapse:collapse; width:100%; font-size:13px; }
+th,td { text-align:left; padding:6px 10px; border-bottom:1px solid #26303e; }
+.status { color:var(--mut); }
+#toast { position:fixed; right:16px; bottom:16px; background:#1c2534; color:var(--fg);
+         padding:10px 16px; border-radius:8px; display:none; max-width:480px; }
+#toast.error { border-left:4px solid var(--bad); }
+</style>
+</head>
+<body>
+<h1>web_zapret2 &mdash; gateway panel</h1>
+
+<div class="card">
+  <label>Exit mode &mdash; egress</label>
+  <div id="exit-mode"></div>
+  <p class="status" id="exit-hint"></p>
+</div>
+
+<div class="card">
+  <label>Strategy &mdash; nfqws desync (applies with a zapret2 restart)</label>
+  <select id="strategy" style="margin:6px 0 0; padding:7px 10px; background:#121a26; color:var(--fg); border:1px solid #33455b;"></select>
+  <p class="status" id="strategy-desc"></p>
+  <button class="primary" id="apply-strategy">Apply strategy &amp; restart nfqws</button>
+</div>
+
+<div class="card">
+  <label>Services</label>
+  <table>
+    <thead><tr><th>service</th><th>status</th><th>pid</th></tr></thead>
+    <tbody id="services"></tbody>
+  </table>
+</div>
+
+<div class="card">
+  <label>Logs</label>
+  <p style="display:flex; gap:8px; align-items:center;">
+    <span>src</span>
+    <select id="log-src" style="padding:4px 8px; background:#121a26; color:var(--fg); border:1px solid #33455b;">
+      <option>nfqws</option><option>ss-server</option><option>sockd</option>
+      <option>redsocks</option><option>ss-local</option><option>udprelay</option><option>panel</option>
+    </select>
+    <button id="refresh-log">refresh</button>
+    <span class="status">auto: 5s</span>
+  </p>
+  <pre class="mono" id="log" style="height:180px;"></pre>
+</div>
+
+<div id="toast"></div>
+<script>
+const $ = (q) => document.querySelector(q);
+let strategyList = [];
+
+function toast(msg, isErr) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.className = isErr ? 'error' : '';
+  t.style.display = 'block';
+  clearTimeout(window.__toastT);
+  window.__toastT = setTimeout(() => { t.style.display = 'none'; }, 6000);
+}
+
+async function api(path, init) {
+  const r = await fetch(path, Object.assign({ headers: { 'Content-Type':'application/json' } }, init || {}));
+  return r.json();
+}
+
+function fmtRunning(r) {
+  return '<span class="dot" style="background:' + (r ? 'var(--ok)' : 'var(--bad)') + '"></span>' +
+         (r ? 'up' : 'down');
+}
+
+async function loadStatus() {
+  try {
+    const s = await api('/api/status');
+    const modes = ['direct', 'socks5', 'ss'];
+    $('#exit-mode').innerHTML = modes.map(m =>
+      '<label style="margin-right:10px;">' +
+      '<input type="radio" name="exit" value="' + m + '"' + (s.exit_mode === m ? ' checked' : '') +
+      ' onchange="setExit(this.value)"> ' + m + '</label>').join('');
+    $('#exit-hint').textContent = hintFor(s.exit_mode);
+    $('#services').innerHTML = s.services.map(x =>
+      '<tr><td class="mono">' + x.name + '</td><td>' + fmtRunning(x.running) +
+      '</td><td class="mono">' + (x.pid || '-') + '</td></tr>').join('');
+  } catch (e) {
+    toast('status fetch failed: ' + e, true);
+  }
+}
+
+function hintFor(mode) {
+  return mode === 'direct'
+    ? 'Traffic exits the container straight to the internet, desynced by nfqws.'
+    : mode === 'socks5'
+    ? 'TCP exits via the upstream SOCKS5 proxy; UDP via the SOCKS5 UDP relay.'
+    : 'TCP exits via ss-local (upstream Shadowsocks); UDP via the SOCKS5 UDP relay.';
+}
+
+async function loadStrategies() {
+  const s = await api('/api/strategies');
+  strategyList = s.strategies;
+  const cur = (await api('/api/strategy')).id;
+  $('#strategy').innerHTML = strategyList.map(x =>
+    '<option value="' + x.id + '"' + (x.id === cur ? ' selected' : '') + '>' +
+    x.id + ' &mdash; ' + x.name + '</option>').join('');
+  updateStrategyDesc();
+}
+
+function updateStrategyDesc() {
+  const x = strategyList.find(s => s.id === $('#strategy').value);
+  $('#strategy-desc').textContent = x ? x.desc : '';
+}
+
+$('#strategy').addEventListener('change', updateStrategyDesc);
+
+async function setExit(mode) {
+  const res = await api('/api/exit', { method: 'POST', body: JSON.stringify({ mode }) });
+  if (!res.ok) { toast('exit change failed: ' + (res.stderr || res.stdout), true); }
+  else { toast('exit mode set to ' + mode); }
+  loadStatus();
+}
+
+$('#apply-strategy').addEventListener('click', async () => {
+  const id = $('#strategy').value;
+  $('#apply-strategy').disabled = true;
+  try {
+    const res = await api('/api/strategy',
+      { method: 'POST', body: JSON.stringify({ id }) });
+    const msg = res.ok ? 'nfqws restarted with strategy "' + id + '"'
+                       : 'strategy apply FAILED: ' + (res.stderr || res.stdout);
+    toast(msg, !res.ok);
+  } finally {
+    $('#apply-strategy').disabled = false;
+  }
+  loadStatus();
+});
+
+async function loadLog() {
+  const src = $('#log-src').value;
+  const r = await api('/api/logs?src=' + encodeURIComponent(src) + '&n=300');
+  $('#log').textContent = r.log;
+}
+
+$('#log-src').addEventListener('change', loadLog);
+$('#refresh-log').addEventListener('click', loadLog);
+
+setInterval(loadStatus, 5000);
+setInterval(loadLog, 5000);
+
+loadStatus();
+loadStrategies();
+loadLog();
+</script>
+</body>
+</html>

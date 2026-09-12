@@ -1,0 +1,59 @@
+{
+  "_comment": "Curated zapret2 (nfqws) desync strategies. Each id once active is written into the nfqws command line. Special strategy 'none' disables nfqws. The web panel switches between these live (change -> restart nfqws).",
+  "strategies": [
+    {
+      "id": "standard",
+      "name": "Standard (fake+multidisorder/multisplit, MD5 fooling)",
+      "desc": "zapret default tactics. Recommended first try.",
+      "nfqws_opt": "--filter-tcp=80 --dpi-desync=fake,multisplit --dpi-desync-split-pos=method+2 --dpi-desync-fooling=md5sig --new --filter-tcp=443 --dpi-desync=fake,multidisorder --dpi-desync-split-pos=1,midsld --dpi-desync-fooling=badseq,md5sig --new --filter-udp=443 --dpi-desync=fake --dpi-desync-repeats=6"
+    },
+    {
+      "id": "fake",
+      "name": "Fake only (repeats)",
+      "desc": "Minimal: sends fake packets ahead of the real one.",
+      "nfqws_opt": "--filter-tcp=80 --dpi-desync=fake --dpi-desync-repeats=2 --new --filter-tcp=443 --dpi-desync=fake --dpi-desync-repeats=11 --new --filter-udp=443 --dpi-desync=fake --dpi-desync-repeats=6"
+    },
+    {
+      "id": "fake-multisplit",
+      "name": "Fake multisplit (MD5)",
+      "desc": "Fakes + split TCP stream into multiple segments.",
+      "nfqws_opt": "--filter-tcp=80 --dpi-desync=fake,multisplit --dpi-desync-split-pos=method+2 --dpi-desync-fooling=md5sig --new --filter-tcp=443 --dpi-desync=fake,multisplit --dpi-desync-split-pos=1,midsld --dpi-desync-fooling=md5sig --new --filter-udp=443 --dpi-desync=fake --dpi-desync-repeats=6"
+    },
+    {
+      "id": "fake-multidisorder",
+      "name": "Fake multidisorder (badseq)",
+      "desc": "Fakes + segments reordered with bad sequence numbers.",
+      "nfqws_opt": "--filter-tcp=80 --dpi-desync=fake,multisplit --dpi-desync-split-pos=method+2 --dpi-desync-fooling=md5sig --new --filter-tcp=443 --dpi-desync=fake,multidisorder --dpi-desync-split-pos=1,midsld --dpi-desync-fooling=badseq,md5sig --new --filter-udp=443 --dpi-desync=fake --dpi-desync-repeats=6"
+    },
+    {
+      "id": "fake-fakedsplit",
+      "name": "Fake + fakedsplit (MD5)",
+      "desc": "Fakes plus replay of the first data chunk.",
+      "nfqws_opt": "--filter-tcp=80 --dpi-desync=fake,fakedsplit --dpi-desync-split-pos=method+2 --dpi-desync-fooling=md5sig --new --filter-tcp=443 --dpi-desync=fake,fakedsplit --dpi-desync-split-pos=1,midsld --dpi-desync-fooling=badseq,md5sig --new --filter-udp=443 --dpi-desync=fake --dpi-desync-repeats=6"
+    },
+    {
+      "id": "split",
+      "name": "Split (no fakes)",
+      "desc": "Pure TCP segmentation, no fake packets.",
+      "nfqws_opt": "--filter-tcp=80 --dpi-desync=split --dpi-desync-split-pos=1 --new --filter-tcp=443 --dpi-desync=split --dpi-desync-split-pos=1,midsld --new --filter-udp=443 --dpi-desync=fake --dpi-desync-repeats=6"
+    },
+    {
+      "id": "disorder",
+      "name": "Disorder (no fakes)",
+      "desc": "Reorder-first-2-segments tactic.",
+      "nfqws_opt": "--filter-tcp=80 --dpi-desync=disorder --new --filter-tcp=443 --dpi-desync=disorder --new --filter-udp=443 --dpi-desync=fake --dpi-desync-repeats=6"
+    },
+    {
+      "id": "ab",
+      "name": "A/B (fake multi)",
+      "desc": "fake,multisplit with method+2 on 443; often good for video hosts.",
+      "nfqws_opt": "--filter-tcp=80 --dpi-desync=fake,multisplit --dpi-desync-split-pos=method+2 --dpi-desync-fooling=md5sig --new --filter-tcp=443 --dpi-desync=fake,multisplit --dpi-desync-split-pos=method+2 --dpi-desync-fooling=md5sig --new --filter-udp=443 --dpi-desync=fake --dpi-desync-repeats=6"
+    },
+    {
+      "id": "none",
+      "name": "Disabled (passthrough)",
+      "desc": "nfqws is stopped; firewall does not divert traffic. Use for diagnostics.",
+      "nfqws_opt": ""
+    }
+  ]
+}

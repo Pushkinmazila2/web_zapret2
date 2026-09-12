@@ -1,0 +1,163 @@
+#!/bin/bash
+# =============================================================================
+# wz-common.sh — shared environment/defaults and helpers for web_zapret2
+# Sourced by wz-fw.sh / wz-svc.sh / wz-apply.sh / entrypoint.sh
+# =============================================================================
+
+WZ_SRC=/opt/webzapret
+WZ_BIN=/opt/webzapret/bin
+WZ_CFG=/etc/webzapret
+WZ_RUN=/run/webzapret
+WZ_LOG=/var/log/webzapret
+WZ_STATE=/opt/webzapret/state
+
+# fixed defaults (override from env)
+: "${WAN_IFACE:=eth0}"
+: "${SS_LISTEN_PORT:=8388}"
+: "${SOCKS5_LISTEN_PORT:=1080}"
+: "${SS_PASSWORD:=change-me}"
+: "${SS_METHOD:=aes-256-gcm}"
+: "${PANEL_PORT:=8080}"
+: "${PANEL_USER:=}"
+: "${PANEL_PASSWORD:=}"
+: "${EXIT_MODE:=direct}"
+: "${UDP_PROXY:=relay}"
+: "${STRATEGY:=standard}"
+: "${UPSTREAM_SOCKS5_HOST:=}"
+: "${UPSTREAM_SOCKS5_PORT:=}"
+: "${UPSTREAM_SOCKS5_USER:=}"
+: "${UPSTREAM_SOCKS5_PASSWORD:=}"
+: "${UPSTREAM_SS_HOST:=}"
+: "${UPSTREAM_SS_PORT:=8388}"
+: "${UPSTREAM_SS_PASSWORD:=}"
+: "${UPSTREAM_SS_METHOD:=aes-256-gcm}"
+
+# load nfqws/firewall constants (may be overridden by env)
+[ -r "$WZ_CFG/zapret.default" ] && . "$WZ_CFG/zapret.default" 2>/dev/null || true
+: "${DESYNC_MARK:=0x40000000}"
+: "${QNUM_TCP:=200}"
+: "${QNUM_UDP:=201}"
+: "${NFQ_TCP_PORTS:=80,443}"
+: "${NFQ_UDP_PORTS:=443}"
+: "${NFQWS_TCP_PKT_OUT:=9}"
+: "${NFQWS_UDP_PKT_OUT:=9}"
+: "${REDSOCKS_PORT:=1060}"
+: "${SS_LOCAL_PORT:=1090}"
+: "${UDP_MARK:=0x1}"
+: "${UTUN:=utun0}"
+: "${RT_TABLE_UDP:=100}"
+
+# ---------------------------------------------------------------------------
+# computed upstream exit endpoints (call compute_upstream after EXIT_MODE is
+# finalized — it is derived from the effective mode, not just the env)
+# ---------------------------------------------------------------------------
+UP_TCP_PORT=            # port redsocks/ss-local connect to (exit flows, TCP)
+UP_UDP_PORT=            # port used for UDP data channel (exit flows, UDP)
+UP_TR_HOST=             # host wz-udprelay must attach to
+UP_TR_PORT=             # port wz-udprelay must attach to
+
+compute_upstream()
+{
+    UP_TCP_PORT=
+    UP_UDP_PORT=
+    UP_TR_HOST=
+    UP_TR_PORT=
+    case "$EXIT_MODE" in
+        socks5)
+            UP_TCP_PORT=$UPSTREAM_SOCKS5_PORT
+            UP_UDP_PORT=$UPSTREAM_SOCKS5_PORT
+            UP_TR_HOST=$UPSTREAM_SOCKS5_HOST
+            UP_TR_PORT=$UPSTREAM_SOCKS5_PORT
+            ;;
+        ss)
+            UP_TCP_PORT=$UPSTREAM_SS_PORT
+            UP_UDP_PORT=$UPSTREAM_SS_PORT
+            UP_TR_HOST=127.0.0.1
+            UP_TR_PORT=$SS_LOCAL_PORT
+            ;;
+    esac
+}
+compute_upstream
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+wz_log() { echo "[$(date -u +%FT%TZ)] $*"; }
+wz_err() { echo "[$(date -u +%FT%TZ)] ERROR: $*" >&2; }
+
+valid_exit_mode()
+{
+    case "$1" in direct|socks5|ss) return 0 ;; esac
+    return 1
+}
+
+valid_strategy_id()
+{
+    # $1 - strategy id; returns 0 if listed in strategies.json
+    [ -n "$1" ] || return 1
+    python3 - "$1" <<'PY' 2>/dev/null
+import json, sys
+try:
+    with open("/opt/webzapret/config/strategies.json", "r") as f:
+        data = json.load(f)
+    ids = {s["id"] for s in data["strategies"]}
+    sys.exit(0 if sys.argv[1] in ids else 1)
+except Exception:
+    sys.exit(1)
+PY
+}
+
+strategy_opt()
+{
+    # prints nfqws options for strategy id $1, or empty string
+    python3 - "$1" <<'PY'
+import json, sys
+with open("/opt/webzapret/config/strategies.json", "r") as f:
+    data = json.load(f)
+for s in data["strategies"]:
+    if s["id"] == sys.argv[1]:
+        print(s.get("nfqws_opt", ""))
+        break
+PY
+}
+
+# current active strategy id (from state, seeded by entrypoint)
+active_strategy()
+{
+    if [ -f "$WZ_STATE/strategy" ]; then cat "$WZ_STATE/strategy"; else echo "$STRATEGY"; fi
+}
+
+active_exit_mode()
+{
+    if [ -f "$WZ_STATE/exit_mode" ]; then cat "$WZ_STATE/exit_mode"; else echo "$EXIT_MODE"; fi
+}
+
+# ---------------------------------------------------------------------------
+# simple pidfile based process management (used by wz-svc.sh and panel/status)
+# ---------------------------------------------------------------------------
+pidfile() { echo "$WZ_RUN/$1.pid"; }
+
+pid_read()
+{
+    local f; f=$(pidfile "$1")
+    [ -f "$f" ] && cat "$f" || true
+}
+
+pid_alive()
+{
+    local p=$1
+    [ -n "$p" ] && kill -0 "$p" 2>/dev/null
+}
+
+svc_running()
+{
+    local p; p=$(pid_read "$1")
+    pid_alive "$p"
+}
+
+log_tail()
+{
+    # $1 service, $2 lines (default 200)
+    local f="$WZ_LOG/$1.log" n=${2:-200}
+    [ -f "$f" ] && tail -n "$n" "$f" || echo "(no log for $1)"
+}
