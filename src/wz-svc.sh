@@ -182,7 +182,7 @@ start_sockd()
     if [ -n "${SOCKD_BIN:-}" ] && [ -x "$SOCKD_BIN" ]; then
         bin=$SOCKD_BIN
     else
-        bin=$(command -v sockd 2>/dev/null || true)
+        bin=$(command -v sockd 2>/dev/null || command -v danted 2>/dev/null || true)
         [ -n "$bin" ] || for c in /usr/sbin/sockd /usr/bin/sockd /usr/sbin/danted; do
             [ -x "$c" ] && { bin=$c; break; }
         done
