@@ -11,7 +11,10 @@ ARG ZAPRET_COMMIT=87e058624c72863db53bdaf7fb6f16576dddb6ab
 FROM debian:bookworm-slim AS zapret-builder
 ARG ZAPRET_COMMIT
 ARG DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Фикс DNS для сборщика:
+RUN echo "nameserver 77.88.8.8" > /etc/resolv.conf && \
+    echo "nameserver 8.8.8.8" >> /etc/resolv.conf && \
+    apt-get update && apt-get install -y --no-install-recommends \
         build-essential git ca-certificates \
         libnetfilter-queue-dev libnfnetlink-dev libpcap-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -27,7 +30,10 @@ RUN git init zapret \
 # ------------- builder: wz-udprelay (C, no deps) ------------------------------
 FROM debian:bookworm-slim AS relay-builder
 ARG DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
+# Фикс DNS для сборщика:
+RUN echo "nameserver 77.88.8.8" > /etc/resolv.conf && \
+    echo "nameserver 8.8.8.8" >> /etc/resolv.conf && \
+    apt-get update && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 COPY src/wz-udprelay/ /build/
 RUN make -C /build all
@@ -36,7 +42,10 @@ RUN make -C /build all
 FROM debian:bookworm-slim AS runtime
 ARG DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Фикс DNS для сборщика и безопасный useradd:
+RUN echo "nameserver 77.88.8.8" > /etc/resolv.conf && \
+    echo "nameserver 8.8.8.8" >> /etc/resolv.conf && \
+    apt-get update && apt-get install -y --no-install-recommends \
         # services
         shadowsocks-libev \
         dante-server \
@@ -48,8 +57,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libnetfilter-queue1 libnfnetlink0 libpcap0.8 \
         python3 \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --no-create-home --shell /usr/sbin/nologin proxy \
-    && useradd --system --no-create-home --shell /usr/sbin/nologin exituser \
+    && (id -u proxy >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin proxy) \
+    && (id -u exituser >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin exituser) \
     && mkdir -p /opt/webzapret/bin /var/log/webzapret /run/webzapret \
     && chown -R proxy:proxy /var/log/webzapret /run/webzapret
 
