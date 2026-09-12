@@ -325,6 +325,7 @@ def status():
             break
     host, host_src = detect_public_host()
     conns = connected_devices()
+    traffic = get_traffic_stats()
     return {
         "version": "0.2.0",
         "uptime": int(time.time() - BOOT_TIME),
@@ -336,6 +337,7 @@ def status():
         },
         "services": [service_state(s) for s in SERVICES],
         "devices": conns,
+        "traffic": traffic,
         "connect": {
             "host": host,
             "host_source": host_src,
@@ -423,13 +425,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {
                 "strategies": [
                     {"id": s.get("id"), "name": s.get("name"),
-                     "desc": s.get("desc", "")} for s in strategies()
+                     "desc": s.get("desc", ""), "imported": s.get("imported", False)} for s in strategies()
                 ]
             })
         if path == "/api/strategy":
             return self._send(200, {"id": active_strategy()})
         if path == "/api/exit":
             return self._send(200, {"mode": active_exit_mode()})
+        if path == "/api/traffic":
+            return self._send(200, get_traffic_stats())
         if path == "/api/logs":
             q = dict(pair.split("=", 1) for pair in
                      self.path.split("?", 1)[1].split("&") if "=" in pair)
@@ -452,6 +456,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"ok": False, "error": "unknown strategy '%s'" % sid})
             res = apply(["strategy", sid])
             return self._send(200, dict(res, strategy=sid))
+        if path == "/api/strategy/import":
+            body = self._read_body()
+            res = import_strategy_from_json(body)
+            return self._send(200 if res.get("ok") else 400, res)
         if path == "/api/exit":
             body = self._read_body()
             mode = str(body.get("mode", ""))

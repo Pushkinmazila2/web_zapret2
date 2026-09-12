@@ -26,6 +26,9 @@ th,td { text-align:left; padding:6px 10px; border-bottom:1px solid #26303e; }
 #toast { position:fixed; right:16px; bottom:16px; background:#1c2534; color:var(--fg);
          padding:10px 16px; border-radius:8px; display:none; max-width:480px; }
 #toast.error { border-left:4px solid var(--bad); }
+textarea { background:#121a26; color:var(--fg); border:1px solid #33455b; border-radius:6px;
+           padding:8px; font:12px/1.4 var(--mono); width:100%; resize:vertical; }
+.scrollable { overflow-y:auto; overflow-x:hidden; }
 </style>
 </head>
 <body>
@@ -35,6 +38,7 @@ th,td { text-align:left; padding:6px 10px; border-bottom:1px solid #26303e; }
   <label>Connection &mdash; client access</label>
   <p class="status">Devices connected (unique IPs, TCP): <b id="dev-count">?</b>
      &middot; ss-server: <span id="dev-ss">0</span> &middot; sockd: <span id="dev-socks">0</span></p>
+  <p class="status">Traffic via nfqws: <span id="traffic-in">0</span> in &middot; <span id="traffic-out">0</span> out &middot; <span id="traffic-total">0</span> total</p>
   <table>
     <thead><tr><th>ingress</th><th>address</th><th>auth / method</th><th></th></tr></thead>
     <tbody id="conn-rows"></tbody>
@@ -54,6 +58,13 @@ th,td { text-align:left; padding:6px 10px; border-bottom:1px solid #26303e; }
   <select id="strategy" style="margin:6px 0 0; padding:7px 10px; background:#121a26; color:var(--fg); border:1px solid #33455b;"></select>
   <p class="status" id="strategy-desc"></p>
   <button class="primary" id="apply-strategy">Apply strategy &amp; restart nfqws</button>
+  
+  <div style="margin-top:16px; padding-top:16px; border-top:1px solid #26303e;">
+    <label>Import custom strategy</label>
+    <p class="status">Paste JSON from zapret2 test results (domain-based strategies)</p>
+    <textarea id="import-json" rows="6" placeholder='{"domain":"example.com","strategies":[...]}'></textarea>
+    <button id="import-strategy" style="margin-top:8px;">Import strategy</button>
+  </div>
 </div>
 
 <div class="card">
