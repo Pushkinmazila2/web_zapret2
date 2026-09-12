@@ -40,6 +40,7 @@ FROM debian:bookworm-slim AS runtime
 ARG DEBIAN_FRONTEND=noninteractive
 
 # DNS build-контейнерам выдаёт dockerd; /etc/resolv.conf на LXC/VPS read-only.
+# NOTE: user proxy is REQUIRED (dante user.unprivileged, ss-server runs as it).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         # services
         shadowsocks-libev \
@@ -57,10 +58,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && { command -v sockd >/dev/null 2>&1 || command -v danted >/dev/null 2>&1 || { \
              echo "ERROR: dante-server installed but neither sockd nor danted found:"; \
              dpkg -L dante-server; exit 1; }; } \
-    #&& (id -u proxy >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin proxy) \
+    && (id -u proxy >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin proxy) \
     && (id -u exituser >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin exituser) \
     && mkdir -p /opt/webzapret/bin /var/log/webzapret /run/webzapret \
-    #&& chown -R proxy:proxy /var/log/webzapret /run/webzapret
+    && chown -R proxy:proxy /var/log/webzapret /run/webzapret
 
 # zapret2 binaries (nfqws, tpws, ipset, mdig)
 COPY --from=zapret-builder /build/zapret/binaries/my/ /opt/webzapret/bin/
