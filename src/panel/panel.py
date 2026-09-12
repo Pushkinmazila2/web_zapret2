@@ -3,13 +3,15 @@
 
 Endpoints
     GET  /                          single-file HTML UI
-    GET  /api/status                services, strategy, exit mode, uptime
+    GET  /api/status                services, strategy, exit mode, uptime, traffic
     GET  /api/strategies            list of available strategies
     GET  /api/strategy              current strategy
     POST /api/strategy {"id": ...}  switch strategy -> restart nfqws
+    POST /api/strategy/import       import custom strategy from JSON
     GET  /api/exit                  current exit mode
     POST /api/exit {"mode": ...}    switch exit mode -> reload fw + restart
     GET  /api/logs?src=<svc>&n=<N>  tail a service log
+    GET  /api/traffic               nfqws traffic counters (in/out bytes)
 
 CLI: python3 panel.py [--check] [--help]
 """
@@ -55,6 +57,18 @@ def read_json(path, default=None):
             return json.load(f)
     except Exception:
         return default
+
+
+def write_json(path, obj):
+    """Write JSON to a file atomically."""
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
 
 
 def state_get(key, default=""):
@@ -230,6 +244,76 @@ def connected_devices():
         "per_service": {k: len(v) for k, v in sorted(per_service.items())},
         "ips": ips[:64],
     }
+
+
+def get_traffic_stats():
+    """Read nfqws traffic counters from state files."""
+    try:
+        bytes_in = int(state_get("nfqws_bytes_in", "0") or "0")
+        bytes_out = int(state_get("nfqws_bytes_out", "0") or "0")
+        return {
+            "bytes_in": bytes_in,
+            "bytes_out": bytes_out,
+            "total": bytes_in + bytes_out,
+        }
+    except Exception:
+        return {"bytes_in": 0, "bytes_out": 0, "total": 0}
+
+
+def import_strategy_from_json(data):
+    """Import a custom strategy from the provided JSON format (domain-based test results)."""
+    try:
+        domain = data.get("domain", "custom")
+        timestamp = data.get("timestamp", "")
+        strategies_list = data.get("strategies", [])
+        
+        if not strategies_list:
+            return {"ok": False, "error": "No strategies found in import data"}
+        
+        # Take the best strategy (first one with highest success rate)
+        best = max(strategies_list, key=lambda s: (s.get("success_rate", 0), -s.get("median_latency_ms", 9999)))
+        
+        # Generate a unique ID for this custom strategy
+        strategy_id = "custom_%s_%s" % (
+            re.sub(r"[^a-z0-9]", "", domain.lower())[:20],
+            timestamp[:10].replace("-", "") if timestamp else int(time.time())
+        )
+        
+        # Build nfqws_opt from the args
+        nfqws_opt = best.get("args", "")
+        protocol = best.get("protocol", "HTTPS/TLS1.2")
+        
+        new_strategy = {
+            "id": strategy_id,
+            "name": "Custom: %s (%s)" % (domain, protocol),
+            "desc": "Imported from %s test results. Success rate: %.1f%%, Latency: %dms" % (
+                domain, 
+                best.get("success_rate", 0) * 100,
+                best.get("median_latency_ms", 0)
+            ),
+            "nfqws_opt": nfqws_opt,
+            "imported": True,
+            "import_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        
+        # Load current strategies and append
+        strat_data = read_json(STRATEGIES_FILE, {"strategies": []})
+        strat_data.setdefault("strategies", [])
+        
+        # Remove any existing strategy with the same ID
+        strat_data["strategies"] = [s for s in strat_data["strategies"] if s.get("id") != strategy_id]
+        
+        # Add the new strategy
+        strat_data["strategies"].append(new_strategy)
+        
+        # Save back
+        if not write_json(STRATEGIES_FILE, strat_data):
+            return {"ok": False, "error": "Failed to write strategies file"}
+        
+        return {"ok": True, "strategy": new_strategy}
+    
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 def status():
