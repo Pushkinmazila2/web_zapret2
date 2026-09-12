@@ -174,12 +174,25 @@ start_ss_server()
     render_ss_server_json > "$WZ_CFG/ss-server.json"
     spawn_svc ss-server proxy /usr/bin/ss-server -c "$WZ_CFG/ss-server.json"
 }
-
 start_sockd()
 {
     render_sockd_conf > "$WZ_CFG/sockd.conf"
+    # resolve the dante binary (name/path differs across distros: sockd/danted)
+    local bin
+    if [ -n "${SOCKD_BIN:-}" ] && [ -x "$SOCKD_BIN" ]; then
+        bin=$SOCKD_BIN
+    else
+        bin=$(command -v sockd 2>/dev/null || true)
+        [ -n "$bin" ] || for c in /usr/sbin/sockd /usr/bin/sockd /usr/sbin/danted; do
+            [ -x "$c" ] && { bin=$c; break; }
+        done
+    fi
+    if [ -z "$bin" ]; then
+        wz_err "dante (sockd) binary not found — is the dante-server package installed?"
+        return 1
+    fi
     # run as root: dante drops to "user.unprivileged: proxy" for its workers
-    spawn_svc sockd "" /usr/sbin/sockd -N -f "$WZ_CFG/sockd.conf"
+    spawn_svc sockd "" "$bin" -N -f "$WZ_CFG/sockd.conf"
 }
 
 start_redsocks()
@@ -243,12 +256,25 @@ svc_status()
     done
 }
 
+# dispatcher: service names contain '-', bash function names cannot
+start_one()
+{
+    local fn
+    case "$1" in
+        ss-server) fn=start_ss_server ;;
+        ss-local)  fn=start_ss_local ;;
+        sockd|nfqws|redsocks|udprelay) fn=start_$1 ;;
+        *) wz_err "unknown service '$1'"; return 2 ;;
+    esac
+    $fn
+}
+
 cmd_start()
 {
     local s
-    for s in ss-server sockd; do start_$s; done
+    for s in ss-server sockd; do start_one "$s"; done
     # exit layer + nfqws
-    for s in redsocks ss-local udprelay nfqws; do start_$s; done
+    for s in redsocks ss-local udprelay nfqws; do start_one "$s"; done
 }
 
 cmd_stop()
@@ -263,9 +289,9 @@ cmd_status()
 }
 
 case "${1:-}" in
-    start)  shift && { [ $# -gt 0 ] && start_$1 || cmd_start; } ;;
+    start)  shift && { [ $# -gt 0 ] && start_one "$1" || cmd_start; } ;;
     stop)   shift && { [ $# -gt 0 ] && stop_svc "$1" || cmd_stop; } ;;
-    restart) shift; if [ $# -gt 0 ]; then stop_svc "$1"; start_$1; else cmd_stop; cmd_start; fi ;;
+    restart) shift; if [ $# -gt 0 ]; then stop_svc "$1"; start_one "$1"; else cmd_stop; cmd_start; fi ;;
     status) cmd_status ;;
     render) render_all ;;
     *)

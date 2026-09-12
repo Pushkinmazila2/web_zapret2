@@ -52,6 +52,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libnetfilter-queue1 libnfnetlink0 libpcap0.8 libmnl0 zlib1g \
         python3 \
     && rm -rf /var/lib/apt/lists/* \
+    # fail the build with a clear diagnostic if dante is missing/incomplete
+    && { command -v sockd >/dev/null 2>&1 || { \
+             echo "ERROR: dante-server installed but sockd binary not found:"; \
+             dpkg -L dante-server; exit 1; }; } \
     && (id -u proxy >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin proxy) \
     && (id -u exituser >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin exituser) \
     && mkdir -p /opt/webzapret/bin /var/log/webzapret /run/webzapret \

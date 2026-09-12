@@ -42,7 +42,11 @@ cp /opt/webzapret/config/strategies.json "$WZ_CFG/strategies.json"
 # ---------------------------------------------------------------------------
 # 3. kernel / networking
 # ---------------------------------------------------------------------------
-sysctl -w net.ipv4.ip_forward=1 >/dev/null
+# ip_forward may be forbidden on some LXC/VPS hosts; compose sets it via
+# docker sysctls when permitted. Non-fatal here: on the host it is often
+# already enabled.
+sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || \
+    wz_err "sysctl ip_forward denied (host restriction?) - upstream NAT may need it"
 sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1 || true
 # tun device (ioctl TUNSETIFF handled by wz-udprelay; CAP set on the binary)
 if [ ! -c /dev/net/tun ]; then
