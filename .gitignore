@@ -1,5 +1,5 @@
 # secrets and local overrides
-.env
+#.env
 
 # logs and runtime artifacts
 *.log
