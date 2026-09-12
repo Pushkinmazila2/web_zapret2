@@ -197,8 +197,8 @@ start_sockd()
     # Вызываем встроенный генератор проекта и пишем результат прямо в системный путь
     render_sockd_conf > /etc/sockd.conf
 
-    # Запускаем Dante
-    spawn_svc sockd "" "$bin"
+    # Запускаем Dante с явным указанием конфигурационного файла
+    spawn_svc sockd "" "$bin" -f /etc/sockd.conf
 }
 
 
