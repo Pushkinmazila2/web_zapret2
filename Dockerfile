@@ -56,7 +56,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && { command -v sockd >/dev/null 2>&1 || { \
              echo "ERROR: dante-server installed but sockd binary not found:"; \
              dpkg -L dante-server; exit 1; }; } \
-    && (id -u proxy >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin proxy) \
+    #&& (id -u proxy >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin proxy) \
     && (id -u exituser >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin exituser) \
     && mkdir -p /opt/webzapret/bin /var/log/webzapret /run/webzapret \
     && chown -R proxy:proxy /var/log/webzapret /run/webzapret
