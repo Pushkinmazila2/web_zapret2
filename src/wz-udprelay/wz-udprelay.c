@@ -43,7 +43,7 @@ typedef struct {
     const char *tun_name, *socks_host, *user, *password;
     int socks_port;
 } Config;
-static Config Cfg = { "utun0", NULL, 1080, "", "" };
+static Config Cfg = { "utun0", NULL, "", "", 1080 };
 
 static void die(const char *m)
 { fprintf(stderr, "%s: %s: %s\n", PROGNAME, m, strerror(errno)); exit(1); }

@@ -17,6 +17,7 @@ RUN echo "nameserver 77.88.8.8" > /etc/resolv.conf && \
     apt-get update && apt-get install -y --no-install-recommends \
         build-essential git ca-certificates \
         libnetfilter-queue-dev libnfnetlink-dev libpcap-dev \
+        libmnl-dev zlib1g-dev libcap-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -53,8 +54,8 @@ RUN echo "nameserver 77.88.8.8" > /etc/resolv.conf && \
         # networking / management
         iptables iproute2 iputils-ping procps curl ca-certificates \
         util-linux tzdata libcap2-bin \
-        # nfqws runtime deps
-        libnetfilter-queue1 libnfnetlink0 libpcap0.8 \
+        # nfqws runtime deps (nfqws links -lmnl, -lz, -lnetfilter_queue, -lnfnetlink)
+        libnetfilter-queue1 libnfnetlink0 libpcap0.8 libmnl0 zlib1g \
         python3 \
     && rm -rf /var/lib/apt/lists/* \
     && (id -u proxy >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin proxy) \
