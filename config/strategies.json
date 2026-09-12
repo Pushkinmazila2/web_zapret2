@@ -54,6 +54,30 @@
       "name": "Disabled (passthrough)",
       "desc": "nfqws is stopped; firewall does not divert traffic. Use for diagnostics.",
       "nfqws_opt": ""
+    },
+    {
+      "id": "custom_disorder",
+      "name": "custom_disorder",
+      "desc": "custom_disorder.",
+      "nfqws_opt": "--filter-tcp=443 --dpi-desync=fake multidisorder --dpi-desync-split-pos=1 --dpi-desync-fooling=badseq,ts --dpi-desync-repeats=1"
+    },
+    {
+      "id": "custom_youtubecom_20260824",
+      "name": "Custom: youtube.com (HTTPS/TLS1.2)",
+      "desc": "Imported from youtube.com test results (100.0% success, 269ms latency) [args translated from zapret2 test format]",
+      "nfqws_opt": "--filter-tcp=443 --dpi-desync=fake,multidisorder --dpi-desync-split-pos=1,midsld",
+      "imported": true,
+      "import_time": "2026-09-12 23:02:22",
+      "import_original_args": "--payload=tls_client_hello --lua-desync=fakeddisorder:pos=midsld:tcp_seq=1000000"
+    },
+    {
+      "id": "custom_youtubecom_20260824_2",
+      "name": "Custom: youtube.com (HTTPS/TLS1.2)",
+      "desc": "Imported from youtube.com test results (100.0% success, 272ms latency) [args translated from zapret2 test format]",
+      "nfqws_opt": "--filter-tcp=443 --dpi-desync=fake,multidisorder --dpi-desync-split-pos=1 --dpi-desync-fooling=badseq,ts --dpi-desync-repeats=1",
+      "imported": true,
+      "import_time": "2026-09-12 23:02:22",
+      "import_original_args": "--payload=tls_client_hello --lua-desync=fake:blob=fake_default_tls:tcp_ack=-66000:tcp_ts_up:tls_mod=rnd,dupsid,padencap:repeats=1 --lua-desync=multidisorder:pos=1"
     }
   ]
 }
