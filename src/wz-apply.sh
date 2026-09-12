@@ -60,7 +60,7 @@ do_exit()
     echo "changing exit mode to '$mode'..."
     /opt/webzapret/scripts/wz-svc.sh render
 
-                echo "restarting exit layer (brings utun up for the UDP relay)..."
+    echo "restarting exit layer (brings utun up for the UDP relay)..."
     /opt/webzapret/scripts/wz-svc.sh restart redsocks || true
     /opt/webzapret/scripts/wz-svc.sh restart ss-local || true
     /opt/webzapret/scripts/wz-svc.sh restart udprelay || true

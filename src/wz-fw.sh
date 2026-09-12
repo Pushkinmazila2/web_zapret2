@@ -105,7 +105,7 @@ fw_apply()
             fi
 
             # ---- desync of exit flows (redsocks/ss-local/udprelay -> upstream)
-                        [ -n "$UP_TCP_PORT" ] && nfq_rule "$UID_EXIT" tcp "$UP_TCP_PORT" "$QNUM_TCP" "$NFQWS_TCP_PKT_OUT"
+            [ -n "$UP_TCP_PORT" ] && nfq_rule "$UID_EXIT" tcp "$UP_TCP_PORT" "$QNUM_TCP" "$NFQWS_TCP_PKT_OUT"
             [ -n "$UP_UDP_PORT" ] && nfq_rule "$UID_EXIT" udp "$UP_UDP_PORT" "$QNUM_UDP" "$NFQWS_UDP_PKT_OUT"
             ;;
     esac

@@ -301,58 +301,147 @@ def get_traffic_stats():
     }
 
 
+def translate_nfqws_args(args, protocol):
+    """Translate zapret2 test-result args to nfqws CLI args.
+
+    Test results use --payload and --lua-desync (from zapret2's Lua-based
+    desync). This translates them to the --filter-tcp/udp --dpi-desync
+    family of options understood by the nfqws binary in this image.
+    If the args already use the nfqws format, they are returned as-is.
+    """
+    if not args or ("--payload=" not in args and "--lua-desync=" not in args):
+        return args
+
+    # Determine filter (protocol + port) from the protocol field
+    if protocol and ("QUIC" in protocol or "UDP" in protocol):
+        filter_opt = "--filter-udp=443"
+    elif protocol and "HTTP" in protocol and "TLS" not in protocol:
+        filter_opt = "--filter-tcp=80"
+    else:
+        filter_opt = "--filter-tcp=443"
+
+    # Parse --lua-desync entries (there may be multiple)
+    lua_specs = re.findall(r"--lua-desync=([^\s]+)", args)
+    if not lua_specs:
+        return filter_opt
+
+    desync_modes = []
+    split_positions = []
+    fooling = []
+    repeats = None
+
+    for spec in lua_specs:
+        tokens = spec.split(":")
+        method = tokens[0]
+
+        # Map lua-desync method to nfqws dpi_desync modes
+        method_map = {
+            "fake": ["fake"],
+            "fakeddisorder": ["fake", "multidisorder"],
+            "multidisorder": ["multidisorder"],
+            "fakedsplit": ["fake", "fakedsplit"],
+            "multisplit": ["multisplit"],
+            "disorder": ["disorder"],
+            "split": ["split"],
+        }
+        desync_modes.extend(method_map.get(method, [method]))
+
+        for token in tokens[1:]:
+            if token.startswith("pos="):
+                pos_val = token.split("=", 1)[1]
+                if pos_val == "midsld":
+                    split_positions.append("midsld")
+                else:
+                    split_positions.append(pos_val)
+            elif token.startswith("repeats="):
+                repeats = int(token.split("=")[1])
+            elif token.startswith("tcp_ack="):
+                fooling.append("badseq")
+            elif token == "tcp_ts_up":
+                fooling.append("ts")
+            elif token.startswith("tls_mod="):
+                mods = token.split("=")[1].split(",")
+                if "rnd" in mods and "ts" not in fooling:
+                    fooling.append("ts")
+                if "dupsid" in mods and "badseq" not in fooling:
+                    fooling.append("badseq")
+                if "padencap" in mods and "badseq" not in fooling:
+                    fooling.append("badseq")
+
+    # Dedupe while preserving order
+    desync_modes = list(dict.fromkeys(desync_modes))
+    split_positions = list(dict.fromkeys(split_positions))
+    fooling = list(dict.fromkeys(fooling))
+
+    parts = [filter_opt]
+    if desync_modes:
+        parts.append("--dpi-desync=" + ",".join(desync_modes))
+    if split_positions:
+        # Prepend '1,' (first packet) when midsld is used, matching existing strategies
+        if "midsld" in split_positions and "1" not in split_positions:
+            split_positions.insert(0, "1")
+        parts.append("--dpi-desync-split-pos=" + ",".join(split_positions))
+    if fooling:
+        parts.append("--dpi-desync-fooling=" + ",".join(fooling))
+    if repeats is not None:
+        parts.append("--dpi-desync-repeats=%d" % repeats)
+
+    return " ".join(parts)
+
+
 def import_strategy_from_json(data):
     """Import a custom strategy from the provided JSON format (domain-based test results)."""
     try:
         domain = data.get("domain", "custom")
         timestamp = data.get("timestamp", "")
         strategies_list = data.get("strategies", [])
-        
         if not strategies_list:
             return {"ok": False, "error": "No strategies found in import data"}
-        
-        # Take the best strategy (first one with highest success rate)
-        best = max(strategies_list, key=lambda s: (s.get("success_rate", 0), -s.get("median_latency_ms", 9999)))
-        
+
+        # Take the best strategy (highest success_rate, then lowest latency)
+        best = max(strategies_list,
+                   key=lambda s: (s.get("success_rate", 0), -s.get("median_latency_ms", 9999)))
+
         # Generate a unique ID for this custom strategy
         strategy_id = "custom_%s_%s" % (
             re.sub(r"[^a-z0-9]", "", domain.lower())[:20],
-            timestamp[:10].replace("-", "") if timestamp else int(time.time())
+            timestamp[:10].replace("-", "") if timestamp else int(time.time()),
         )
-        
-        # Build nfqws_opt from the args
-        nfqws_opt = best.get("args", "")
+
         protocol = best.get("protocol", "HTTPS/TLS1.2")
-        
+        original_args = best.get("args", "")
+        nfqws_opt = translate_nfqws_args(original_args, protocol)
+
+        # Detect if translation was needed
+        translated = "--payload=" in original_args or "--lua-desync=" in original_args
+
         new_strategy = {
             "id": strategy_id,
             "name": "Custom: %s (%s)" % (domain, protocol),
-            "desc": "Imported from %s test results. Success rate: %.1f%%, Latency: %dms" % (
-                domain, 
+            "desc": "Imported from %s test results (%.1f%% success, %dms latency)%s" % (
+                domain,
                 best.get("success_rate", 0) * 100,
-                best.get("median_latency_ms", 0)
+                int(best.get("median_latency_ms", 0)),
+                " [args translated from zapret2 test format]" if translated else "",
             ),
             "nfqws_opt": nfqws_opt,
             "imported": True,
             "import_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "import_original_args": original_args,
         }
-        
-        # Load current strategies and append
+
+        # Load current strategies, remove any existing with same ID, append
         strat_data = read_json(STRATEGIES_FILE, {"strategies": []})
         strat_data.setdefault("strategies", [])
-        
-        # Remove any existing strategy with the same ID
-        strat_data["strategies"] = [s for s in strat_data["strategies"] if s.get("id") != strategy_id]
-        
-        # Add the new strategy
+        strat_data["strategies"] = [s for s in strat_data["strategies"]
+                                    if s.get("id") != strategy_id]
         strat_data["strategies"].append(new_strategy)
-        
-        # Save back
+
         if not write_json(STRATEGIES_FILE, strat_data):
             return {"ok": False, "error": "Failed to write strategies file"}
-        
+
         return {"ok": True, "strategy": new_strategy}
-    
+
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

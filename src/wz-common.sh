@@ -188,9 +188,8 @@ nfqws_traffic_counters()
         [ "$target" = "RETURN" ] && bytes_in=$((bytes_in + byt))
     done <<< "$output"
 
-        echo "$bytes_in $bytes_out"
+    echo "$bytes_in $bytes_out"
 }
-
 accumulate_traffic_counters()
 {
     # Read current iptables counters and accumulate them into state files
