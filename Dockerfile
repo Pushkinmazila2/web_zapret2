@@ -59,7 +59,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     #&& (id -u proxy >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin proxy) \
     && (id -u exituser >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin exituser) \
     && mkdir -p /opt/webzapret/bin /var/log/webzapret /run/webzapret \
-    && chown -R proxy:proxy /var/log/webzapret /run/webzapret
+    #&& chown -R proxy:proxy /var/log/webzapret /run/webzapret
 
 # zapret2 binaries (nfqws, tpws, ipset, mdig)
 COPY --from=zapret-builder /build/zapret/binaries/my/ /opt/webzapret/bin/
