@@ -192,7 +192,7 @@ start_sockd()
         return 1
     fi
     # run as root: dante drops to "user.unprivileged: proxy" for its workers
-    spawn_svc sockd "" "$bin" -f "$WZ_CFG/sockd.conf"
+    spawn_svc sockd "" "$bin" -F "$WZ_CFG/sockd.conf"
 }
 
 start_redsocks()
