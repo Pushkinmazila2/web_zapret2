@@ -247,17 +247,58 @@ def connected_devices():
 
 
 def get_traffic_stats():
-    """Read nfqws traffic counters from state files."""
+    """Read nfqws traffic counters from iptables byte counters.
+
+    Egress bytes ("out") come from NFQUEUE rules in the WZFW mangle/OUTPUT
+    chain — packets desynced by nfqws.  Ingress bytes ("in") come from the
+    NFQIN counting chain in mangle/PREROUTING — return traffic from remote
+    servers.  Counters persist across nfqws restarts and reset when the
+    firewall is reloaded (exit-mode change).  Falls back to state files
+    when iptables is unavailable.
+    """
+    bytes_in = 0
+    bytes_out = 0
     try:
+        r = subprocess.run(
+            ["/usr/sbin/iptables", "-t", "mangle", "-L", "WZFW",
+             "-v", "-n", "-x", "-w", "1"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in r.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 3 and parts[2] == "NFQUEUE":
+                try:
+                    bytes_out += int(parts[1])
+                except ValueError:
+                    pass
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(
+            ["/usr/sbin/iptables", "-t", "mangle", "-L", "NFQIN",
+             "-v", "-n", "-x", "-w", "1"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in r.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 3 and parts[2] == "RETURN":
+                try:
+                    bytes_in += int(parts[1])
+                except ValueError:
+                    pass
+    except Exception:
+        pass
+
+    # Fallback to state files when iptables is unavailable
+    if bytes_in == 0 and bytes_out == 0:
         bytes_in = int(state_get("nfqws_bytes_in", "0") or "0")
         bytes_out = int(state_get("nfqws_bytes_out", "0") or "0")
-        return {
-            "bytes_in": bytes_in,
-            "bytes_out": bytes_out,
-            "total": bytes_in + bytes_out,
-        }
-    except Exception:
-        return {"bytes_in": 0, "bytes_out": 0, "total": 0}
+
+    return {
+        "bytes_in": bytes_in,
+        "bytes_out": bytes_out,
+        "total": bytes_in + bytes_out,
+    }
 
 
 def import_strategy_from_json(data):

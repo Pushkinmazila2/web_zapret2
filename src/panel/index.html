@@ -86,7 +86,7 @@ textarea { background:#121a26; color:var(--fg); border:1px solid #33455b; border
     <button id="refresh-log">refresh</button>
     <span class="status">auto: 5s</span>
   </p>
-  <pre class="mono" id="log" style="height:180px;"></pre>
+    <pre class="mono scrollable" id="log" style="height:180px; max-height:180px;"></pre>
 </div>
 
 <div id="toast"></div>
@@ -135,6 +135,14 @@ function fmtRunning(r) {
          (r ? 'up' : 'down');
 }
 
+function formatBytes(b) {
+  b = b || 0;
+  if (b < 1024) return b + ' B';
+  if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
+  if (b < 1024*1024*1024) return (b/(1024*1024)).toFixed(1) + ' MB';
+  return (b/(1024*1024*1024)).toFixed(1) + ' GB';
+}
+
 async function loadStatus() {
   try {
     const s = await api('/api/status');
@@ -147,10 +155,18 @@ async function loadStatus() {
     $('#services').innerHTML = s.services.map(x =>
       '<tr><td class="mono">' + x.name + '</td><td>' + fmtRunning(x.running) +
       '</td><td class="mono">' + (x.pid || '-') + '</td></tr>').join('');
+    renderTraffic(s.traffic || {});
     renderConnect(s.connect || {}, s.devices || {});
   } catch (e) {
     toast('status fetch failed: ' + e, true);
   }
+}
+
+function renderTraffic(t) {
+  const fmt = (b) => formatBytes(b || 0);
+  $('#traffic-in').textContent = fmt(t.bytes_in);
+  $('#traffic-out').textContent = fmt(t.bytes_out);
+  $('#traffic-total').textContent = fmt(t.total);
 }
 
 function hintFor(mode) {
@@ -223,6 +239,38 @@ $('#apply-strategy').addEventListener('click', async () => {
     $('#apply-strategy').disabled = false;
   }
   loadStatus();
+});
+
+// Import custom strategy from zapret2 test-results JSON
+$('#import-strategy').addEventListener('click', async () => {
+  const jsonText = $('#import-json').value.trim();
+  if (!jsonText) {
+    toast('please paste strategy JSON', true);
+    return;
+  }
+  let data;
+  try {
+    data = JSON.parse(jsonText);
+  } catch (e) {
+    toast('invalid JSON: ' + e.message, true);
+    return;
+  }
+  try {
+    const res = await api('/api/strategy/import',
+      { method: 'POST', body: JSON.stringify(data) });
+    if (res.ok && res.strategy) {
+      toast('imported strategy: ' + res.strategy.id);
+      $('#import-json').value = '';
+      await loadStrategies();
+      // auto-select the newly imported strategy
+      $('#strategy').value = res.strategy.id;
+      updateStrategyDesc();
+    } else {
+      toast('import failed: ' + (res.error || 'unknown error'), true);
+    }
+  } catch (e) {
+    toast('import failed: ' + e, true);
+  }
 });
 
 async function loadLog() {

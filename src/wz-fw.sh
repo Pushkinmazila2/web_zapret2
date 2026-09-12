@@ -17,8 +17,6 @@
 set -u
 . /opt/webzapret/scripts/wz-common.sh
 
-IPT=/usr/sbin/iptables
-IP=/usr/sbin/ip
 MODE="$(active_exit_mode)"
 EXIT_MODE=$MODE          # make computed upstream endpoints follow the state
 compute_upstream
@@ -30,10 +28,13 @@ fw_flush()
 {
     # remove our chain references
     $IPT -t mangle -D OUTPUT -j WZFW 2>/dev/null || true
+    $IPT -t mangle -D PREROUTING -j NFQIN 2>/dev/null || true
     $IPT -t nat     -D OUTPUT -j WZREDIR 2>/dev/null || true
     # flush + delete chains
     $IPT -t mangle -F WZFW 2>/dev/null || true
     $IPT -t mangle -X WZFW 2>/dev/null || true
+    $IPT -t mangle -F NFQIN 2>/dev/null || true
+    $IPT -t mangle -X NFQIN 2>/dev/null || true
     $IPT -t nat     -F WZREDIR 2>/dev/null || true
     $IPT -t nat     -X WZREDIR 2>/dev/null || true
     # remove policy routing (both the scoped and any pre-scoping variant)
@@ -104,10 +105,19 @@ fw_apply()
             fi
 
             # ---- desync of exit flows (redsocks/ss-local/udprelay -> upstream)
-            [ -n "$UP_TCP_PORT" ] && nfq_rule "$UID_EXIT" tcp "$UP_TCP_PORT" "$QNUM_TCP" "$NFQWS_TCP_PKT_OUT"
+                        [ -n "$UP_TCP_PORT" ] && nfq_rule "$UID_EXIT" tcp "$UP_TCP_PORT" "$QNUM_TCP" "$NFQWS_TCP_PKT_OUT"
             [ -n "$UP_UDP_PORT" ] && nfq_rule "$UID_EXIT" udp "$UP_UDP_PORT" "$QNUM_UDP" "$NFQWS_UDP_PKT_OUT"
             ;;
     esac
+
+    # ---- ingress counting chain (for traffic counter) ----
+    # Count bytes of incoming packets in PREROUTING.  The RETURN rule at the
+    # end of NFQIN matches every packet, so its byte counter is the total
+    # ingress byte count.  Reset only on firewall reload (exit-mode change).
+    $IPT -t mangle -N NFQIN 2>/dev/null || $IPT -t mangle -F NFQIN
+    $IPT -t mangle -D PREROUTING -j NFQIN 2>/dev/null || true
+    $IPT -t mangle -I PREROUTING 1 -j NFQIN
+    $IPT -t mangle -A NFQIN -j RETURN
 }
 
 fw_status()

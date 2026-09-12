@@ -11,6 +11,10 @@ WZ_RUN=/run/webzapret
 WZ_LOG=/var/log/webzapret
 WZ_STATE=/opt/webzapret/state
 
+# binaries (shared across all wz-* scripts)
+IPT=/usr/sbin/iptables
+IP=/usr/sbin/ip
+
 # fixed defaults (override from env)
 : "${WAN_IFACE:=eth0}"
 : "${SS_LISTEN_PORT:=8388}"
@@ -160,4 +164,47 @@ log_tail()
     # $1 service, $2 lines (default 200)
     local f="$WZ_LOG/$1.log" n=${2:-200}
     [ -f "$f" ] && tail -n "$n" "$f" || echo "(no log for $1)"
+}
+
+# ---------------------------------------------------------------------------
+# traffic counters (nfqws in/out bytes via iptables byte counters)
+# ---------------------------------------------------------------------------
+nfqws_traffic_counters()
+{
+    # Read iptables byte counters for nfqws traffic.
+    #   egress ("out"): NFQUEUE rules in WZFW (mangle/OUTPUT)
+    #   ingress ("in"):  RETURN rule in NFQIN (mangle/PREROUTING)
+    # Output: "bytes_in bytes_out"
+    local bytes_in=0 bytes_out=0 pkt byt target
+    local output
+
+    output=$($IPT -t mangle -L WZFW -v -n -x -w 1 2>/dev/null || true)
+    while read -r pkt byt target rest; do
+        [ "$target" = "NFQUEUE" ] && bytes_out=$((bytes_out + byt))
+    done <<< "$output"
+
+    output=$($IPT -t mangle -L NFQIN -v -n -x -w 1 2>/dev/null || true)
+    while read -r pkt byt target rest; do
+        [ "$target" = "RETURN" ] && bytes_in=$((bytes_in + byt))
+    done <<< "$output"
+
+        echo "$bytes_in $bytes_out"
+}
+
+accumulate_traffic_counters()
+{
+    # Read current iptables counters and accumulate them into state files
+    # so they persist across firewall reloads / nfqws restarts.
+    # Sequence: read -> zero -> add (avoids double-counting in the panel).
+    local counters bytes_in bytes_out cum_in cum_out
+    counters=$(nfqws_traffic_counters 2>/dev/null || echo "0 0")
+    read -r bytes_in bytes_out <<< "$counters"
+    # Zero iptables counters first so only new traffic is counted afterwards
+    $IPT -t mangle -Z WZFW 2>/dev/null || true
+    $IPT -t mangle -Z NFQIN 2>/dev/null || true
+    cum_in=$(cat "$WZ_STATE/nfqws_bytes_in" 2>/dev/null || echo 0)
+    cum_out=$(cat "$WZ_STATE/nfqws_bytes_out" 2>/dev/null || echo 0)
+    printf '%s\n' "$((cum_in + bytes_in))" > "$WZ_STATE/nfqws_bytes_in"
+    printf '%s\n' "$((cum_out + bytes_out))" > "$WZ_STATE/nfqws_bytes_out"
+    chmod 0640 "$WZ_STATE/nfqws_bytes_in" "$WZ_STATE/nfqws_bytes_out" 2>/dev/null || true
 }

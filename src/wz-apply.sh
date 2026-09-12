@@ -60,10 +60,13 @@ do_exit()
     echo "changing exit mode to '$mode'..."
     /opt/webzapret/scripts/wz-svc.sh render
 
-    echo "restarting exit layer (brings utun up for the UDP relay)..."
+                echo "restarting exit layer (brings utun up for the UDP relay)..."
     /opt/webzapret/scripts/wz-svc.sh restart redsocks || true
     /opt/webzapret/scripts/wz-svc.sh restart ss-local || true
     /opt/webzapret/scripts/wz-svc.sh restart udprelay || true
+
+    # Accumulate counters into state files before firewall reload (which resets them)
+    accumulate_traffic_counters
 
     echo "reloading firewall..."
     /opt/webzapret/scripts/wz-fw.sh start || { echo "ERROR: firewall apply failed" >&2; return 3; }
