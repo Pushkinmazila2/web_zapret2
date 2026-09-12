@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      dns:
+        - 77.88.8.8
+        - 8.8.8.8
     image: web-zapret2:stage1
     container_name: web-zapret2
     restart: unless-stopped
