@@ -16,6 +16,7 @@ services:
       - "${SOCKS5_LISTEN_PORT:-1080}:1080/tcp"
       - "${SOCKS5_LISTEN_PORT:-1080}:1080/udp"
       - "${PANEL_PORT:-8080}:8080/tcp"
+    privileged: true
     cap_add:
       - NET_ADMIN
       - NET_RAW
