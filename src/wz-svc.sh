@@ -192,7 +192,12 @@ start_sockd()
         return 1
     fi
     # run as root: dante drops to "user.unprivileged: proxy" for its workers
-    spawn_svc sockd "" "$bin" -F "$WZ_CFG/sockd.conf"
+    # Удаляем старый системный конфиг, если он есть, и подменяем на наш
+    rm -f /etc/sockd.conf
+    ln -sf "$WZ_CFG/sockd.conf" /etc/sockd.conf
+
+    # Запускаем Dante без флагов пупка конфигурации
+    spawn_svc sockd "" "$bin"
 }
 
 start_redsocks()
