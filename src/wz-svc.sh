@@ -176,7 +176,6 @@ start_ss_server()
 }
 start_sockd()
 {
-    render_sockd_conf > "$WZ_CFG/sockd.conf"
     # resolve the dante binary (name/path differs across distros: sockd/danted)
     local bin
     if [ -n "${SOCKD_BIN:-}" ] && [ -x "$SOCKD_BIN" ]; then
@@ -191,14 +190,19 @@ start_sockd()
         wz_err "dante (sockd) binary not found — is the dante-server package installed?"
         return 1
     fi
-    # run as root: dante drops to "user.unprivileged: proxy" for its workers
-    # Удаляем старый системный конфиг, если он есть, и подменяем на наш
-    rm -f /etc/sockd.conf
-    ln -sf /opt/webzapret/state/sockd.conf /etc/sockd.conf
 
-    # Запускаем Dante без флагов пупка конфигурации
+    log_info "starting service 'sockd'..."
+
+    # Удаляем старые конфигурационные файлы и ссылки
+    rm -f /etc/sockd.conf /opt/webzapret/config/sockd.conf
+
+    # Генерируем отрендеренный рабочий конфиг прямо в системный путь /etc/
+    render_sockd_conf > /etc/sockd.conf
+
+    # Запускаем Dante из стандартного пути без лишних флагов
     spawn_svc sockd "" "$bin"
 }
+
 
 start_redsocks()
 {
