@@ -390,7 +390,11 @@ def translate_nfqws_args(args, protocol):
 
 
 def import_strategy_from_json(data):
-    """Import a custom strategy from the provided JSON format (domain-based test results)."""
+    """Import custom strategies from the provided JSON format (domain-based test results).
+
+    Imports every entry of the "strategies" array (there may be several),
+    ranked best-first (highest success_rate, then lowest latency).
+    """
     try:
         domain = data.get("domain", "custom")
         timestamp = data.get("timestamp", "")
@@ -398,49 +402,56 @@ def import_strategy_from_json(data):
         if not strategies_list:
             return {"ok": False, "error": "No strategies found in import data"}
 
-        # Take the best strategy (highest success_rate, then lowest latency)
-        best = max(strategies_list,
-                   key=lambda s: (s.get("success_rate", 0), -s.get("median_latency_ms", 9999)))
+        # Rank best-first: highest success_rate, then lowest latency
+        ranked = sorted(strategies_list,
+                        key=lambda s: (-s.get("success_rate", 0),
+                                       s.get("median_latency_ms", 9999)))
 
-        # Generate a unique ID for this custom strategy
-        strategy_id = "custom_%s_%s" % (
-            re.sub(r"[^a-z0-9]", "", domain.lower())[:20],
-            timestamp[:10].replace("-", "") if timestamp else int(time.time()),
-        )
+        domain_slug = re.sub(r"[^a-z0-9]", "", domain.lower())[:20]
+        date_slug = timestamp[:10].replace("-", "") if timestamp else str(int(time.time()))
+        id_base = "custom_%s_%s" % (domain_slug, date_slug)
 
-        protocol = best.get("protocol", "HTTPS/TLS1.2")
-        original_args = best.get("args", "")
-        nfqws_opt = translate_nfqws_args(original_args, protocol)
-
-        # Detect if translation was needed
-        translated = "--payload=" in original_args or "--lua-desync=" in original_args
-
-        new_strategy = {
-            "id": strategy_id,
-            "name": "Custom: %s (%s)" % (domain, protocol),
-            "desc": "Imported from %s test results (%.1f%% success, %dms latency)%s" % (
-                domain,
-                best.get("success_rate", 0) * 100,
-                int(best.get("median_latency_ms", 0)),
-                " [args translated from zapret2 test format]" if translated else "",
-            ),
-            "nfqws_opt": nfqws_opt,
-            "imported": True,
-            "import_time": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "import_original_args": original_args,
-        }
-
-        # Load current strategies, remove any existing with same ID, append
+        # Load current strategies
         strat_data = read_json(STRATEGIES_FILE, {"strategies": []})
         strat_data.setdefault("strategies", [])
-        strat_data["strategies"] = [s for s in strat_data["strategies"]
-                                    if s.get("id") != strategy_id]
-        strat_data["strategies"].append(new_strategy)
+
+        imported = []
+        for idx, s in enumerate(ranked):
+            strategy_id = id_base if idx == 0 else "%s_%d" % (id_base, idx + 1)
+
+            protocol = s.get("protocol", "HTTPS/TLS1.2")
+            original_args = s.get("args", "")
+            nfqws_opt = translate_nfqws_args(original_args, protocol)
+
+            # Detect if translation was needed
+            translated = "--payload=" in original_args or "--lua-desync=" in original_args
+
+            new_strategy = {
+                "id": strategy_id,
+                "name": "Custom: %s (%s)" % (domain, protocol),
+                "desc": "Imported from %s test results (%.1f%% success, %dms latency)%s" % (
+                    domain,
+                    s.get("success_rate", 0) * 100,
+                    int(s.get("median_latency_ms", 0)),
+                    " [args translated from zapret2 test format]" if translated else "",
+                ),
+                "nfqws_opt": nfqws_opt,
+                "imported": True,
+                "import_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "import_original_args": original_args,
+            }
+
+            # Replace any previous import of the same domain+date batch, append
+            strat_data["strategies"] = [x for x in strat_data["strategies"]
+                                        if x.get("id") != strategy_id]
+            strat_data["strategies"].append(new_strategy)
+            imported.append(new_strategy)
 
         if not write_json(STRATEGIES_FILE, strat_data):
             return {"ok": False, "error": "Failed to write strategies file"}
 
-        return {"ok": True, "strategy": new_strategy}
+        return {"ok": True, "strategy": imported[0], "strategies": imported,
+                "count": len(imported)}
 
     except Exception as e:
         return {"ok": False, "error": str(e)}

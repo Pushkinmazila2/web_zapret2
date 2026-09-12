@@ -259,7 +259,9 @@ $('#import-strategy').addEventListener('click', async () => {
     const res = await api('/api/strategy/import',
       { method: 'POST', body: JSON.stringify(data) });
     if (res.ok && res.strategy) {
-      toast('imported strategy: ' + res.strategy.id);
+      const n = (typeof res.count === 'number' && res.count > 1)
+        ? ' (' + res.count + ' strategies imported)' : '';
+      toast('imported strategy: ' + res.strategy.id + n);
       $('#import-json').value = '';
       await loadStrategies();
       // auto-select the newly imported strategy
