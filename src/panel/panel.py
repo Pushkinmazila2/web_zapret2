@@ -18,9 +18,12 @@ import hmac
 import json
 import os
 import re
+import socket
+import struct
 import subprocess
 import sys
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 WZ_SRC = "/opt/webzapret"
@@ -36,6 +39,14 @@ HTTPD_HOST = os.environ.get("PANEL_BIND", "0.0.0.0")
 HTTPD_PORT = int(os.environ.get("PANEL_PORT", "8080"))
 AUTH_USER = os.environ.get("PANEL_USER", "")
 AUTH_PASS = os.environ.get("PANEL_PASSWORD", "")
+
+# --- access layer endpoints (used to build client connection strings) --------
+SS_LISTEN_PORT = int(os.environ.get("SS_LISTEN_PORT", "8388") or 8388)
+SOCKS5_LISTEN_PORT = int(os.environ.get("SOCKS5_LISTEN_PORT", "1080") or 1080)
+SS_PASSWORD = os.environ.get("SS_PASSWORD", "change-me")
+SS_METHOD = os.environ.get("SS_METHOD", "aes-256-gcm")
+# Public address clients use to reach this gateway; empty => auto-detect.
+PUBLIC_HOST = os.environ.get("PUBLIC_HOST", "").strip()
 
 
 def read_json(path, default=None):
@@ -109,6 +120,118 @@ def apply(args):
         return {"ok": False, "rc": -1, "stdout": "", "stderr": "timed out (90s)"}
 
 
+def tail_log(src, n=200):
+    """Tail a service log file (last n lines); tolerant to bad input."""
+    try:
+        n = max(1, min(int(n), 5000))
+    except (TypeError, ValueError):
+        n = 200
+    if not re.fullmatch(r"[a-z0-9_-]{1,64}", src or ""):
+        return "(bad log source)"
+    path = os.path.join(WZ_LOG, src + ".log")
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - 256 * 1024))   # read at most the last 256 KiB
+            data = f.read().decode("utf-8", "replace")
+        lines = data.splitlines()
+        if size > 256 * 1024 and lines:
+            lines = lines[1:]                    # drop a possibly truncated line
+        return "\n".join(lines[-n:]) + "\n"
+    except FileNotFoundError:
+        return "(no log for %s)" % src
+    except Exception as e:
+        return "(log read error: %s)" % e
+
+
+_IP_CACHE = {"host": "", "source": "", "ts": 0.0}
+
+
+def detect_public_host():
+    """Address clients should connect to: PUBLIC_HOST env wins, else the
+    public IP via an echo service (cached 10 min), else the local egress IP."""
+    if PUBLIC_HOST:
+        return PUBLIC_HOST, "env"
+    now = time.time()
+    if _IP_CACHE["host"] and now - _IP_CACHE["ts"] < 600:
+        return _IP_CACHE["host"], _IP_CACHE["source"]
+    host, source = "", ""
+    for url in ("https://api.ipify.org", "https://ifconfig.me/ip"):
+        try:
+            with urllib.request.urlopen(url, timeout=4) as r:
+                t = r.read(64).decode("ascii", "ignore").strip()
+            if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", t):
+                host, source = t, "auto"
+                break
+        except Exception:
+            continue
+    if not host:
+        try:  # fallback: local egress address (docker bridge, not public)
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("8.8.8.8", 53))
+                host = s.getsockname()[0] or ""
+            finally:
+                s.close()
+            source = "local" if host else ""
+        except Exception:
+            pass
+    if host:
+        _IP_CACHE.update(host=host, source=source, ts=now)
+    return host, source
+
+
+def ss_uri(host):
+    """SIP002 Shadowsocks URI of the local ss-server."""
+    raw = "%s:%s" % (SS_METHOD, SS_PASSWORD)
+    userinfo = base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
+    return "ss://%s@%s:%d#web_zapret2" % (userinfo, host, SS_LISTEN_PORT)
+
+
+def connected_devices():
+    """Unique client IPs with ESTABLISHED TCP connections to the access-layer
+    listen ports. TCP only: UDP client endpoints are not visible in /proc."""
+    port_svc = {}
+    if SS_LISTEN_PORT:
+        port_svc[SS_LISTEN_PORT] = "ss-server"
+    if SOCKS5_LISTEN_PORT:
+        port_svc[SOCKS5_LISTEN_PORT] = "sockd"
+    per_service = {v: set() for v in port_svc.values()}
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(path, "r") as f:
+                rows = f.read().splitlines()[1:]
+        except Exception:
+            continue
+        for row in rows:
+            cols = row.split()
+            if len(cols) < 4 or cols[3] != "01":     # 01 == ESTABLISHED
+                continue
+            try:
+                lport = int(cols[1].rsplit(":", 1)[1], 16)
+            except Exception:
+                continue
+            svc = port_svc.get(lport)
+            if svc:
+                per_service[svc].add(cols[2].rsplit(":", 1)[0])
+
+    def dec(x):
+        if len(x) == 8:  # /proc ipv4 addresses are little-endian hex
+            try:
+                return socket.inet_ntoa(struct.pack("<I", int(x, 16)))
+            except Exception:
+                return x
+        return x or "(?)"
+
+    ips = sorted({dec(x) for s in per_service.values() for x in s})
+    return {
+        "count": len(ips),
+        "per_service": {k: len(v) for k, v in sorted(per_service.items())},
+        "ips": ips[:64],
+    }
+
+
 def status():
     strat = active_strategy()
     entry = {}
@@ -116,8 +239,10 @@ def status():
         if s.get("id") == strat:
             entry = s
             break
+    host, host_src = detect_public_host()
+    conns = connected_devices()
     return {
-        "version": "0.1.0",
+        "version": "0.2.0",
         "uptime": int(time.time() - BOOT_TIME),
         "exit_mode": active_exit_mode(),
         "strategy": {
@@ -126,6 +251,17 @@ def status():
             "nfqws_opt": entry.get("nfqws_opt", ""),
         },
         "services": [service_state(s) for s in SERVICES],
+        "devices": conns,
+        "connect": {
+            "host": host,
+            "host_source": host_src,
+            "ss": {
+                "port": SS_LISTEN_PORT,
+                "method": SS_METHOD,
+                "uri": ss_uri(host) if host else "",
+            },
+            "socks5": {"port": SOCKS5_LISTEN_PORT, "auth": "none"},
+        },
     }
 
 
@@ -214,7 +350,10 @@ class Handler(BaseHTTPRequestHandler):
             q = dict(pair.split("=", 1) for pair in
                      self.path.split("?", 1)[1].split("&") if "=" in pair)
             src = q.get("src", "nfqws")
-            n = int(q.get("n", "200") or "200")
+            try:
+                n = int(q.get("n", "200") or "200")
+            except ValueError:
+                n = 200
             return self._send(200, {"src": src, "log": tail_log(src, n)})
         return self._send(404, {"error": "not found"})
 

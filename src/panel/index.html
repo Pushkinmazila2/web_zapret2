@@ -32,6 +32,18 @@ th,td { text-align:left; padding:6px 10px; border-bottom:1px solid #26303e; }
 <h1>web_zapret2 &mdash; gateway panel</h1>
 
 <div class="card">
+  <label>Connection &mdash; client access</label>
+  <p class="status">Devices connected (unique IPs, TCP): <b id="dev-count">?</b>
+     &middot; ss-server: <span id="dev-ss">0</span> &middot; sockd: <span id="dev-socks">0</span></p>
+  <table>
+    <thead><tr><th>ingress</th><th>address</th><th>auth / method</th><th></th></tr></thead>
+    <tbody id="conn-rows"></tbody>
+  </table>
+  <pre class="mono" id="ss-uri" style="margin:10px 0 0;"></pre>
+  <p class="status" id="conn-hint"></p>
+</div>
+
+<div class="card">
   <label>Exit mode &mdash; egress</label>
   <div id="exit-mode"></div>
   <p class="status" id="exit-hint"></p>
@@ -80,6 +92,28 @@ function toast(msg, isErr) {
   window.__toastT = setTimeout(() => { t.style.display = 'none'; }, 6000);
 }
 
+function esc(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+}
+
+function fallbackCopy(txt) {
+  const ta = document.createElement('textarea');
+  ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); toast('copied'); }
+  catch (e) { toast('copy failed — select manually', true); }
+  document.body.removeChild(ta);
+}
+
+function copyText(txt) {
+  if (!txt) { toast('nothing to copy', true); return; }
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(txt).then(() => toast('copied'), () => fallbackCopy(txt));
+  } else {
+    fallbackCopy(txt);   // panel is plain http:// — clipboard API is unavailable
+  }
+}
+
 async function api(path, init) {
   const r = await fetch(path, Object.assign({ headers: { 'Content-Type':'application/json' } }, init || {}));
   return r.json();
@@ -102,6 +136,7 @@ async function loadStatus() {
     $('#services').innerHTML = s.services.map(x =>
       '<tr><td class="mono">' + x.name + '</td><td>' + fmtRunning(x.running) +
       '</td><td class="mono">' + (x.pid || '-') + '</td></tr>').join('');
+    renderConnect(s.connect || {}, s.devices || {});
   } catch (e) {
     toast('status fetch failed: ' + e, true);
   }
@@ -113,6 +148,31 @@ function hintFor(mode) {
     : mode === 'socks5'
     ? 'TCP exits via the upstream SOCKS5 proxy; UDP via the SOCKS5 UDP relay.'
     : 'TCP exits via ss-local (upstream Shadowsocks); UDP via the SOCKS5 UDP relay.';
+}
+
+function renderConnect(c, d) {
+  $('#dev-count').textContent = (typeof d.count === 'number') ? d.count : '?';
+  $('#dev-ss').textContent = (d.per_service && d.per_service['ss-server']) || 0;
+  $('#dev-socks').textContent = (d.per_service && d.per_service['sockd']) || 0;
+  const host = c.host || 'NOT-DETECTED (set PUBLIC_HOST in .env)';
+  const rows = [];
+  if (c.ss) {
+    rows.push('<tr><td>Shadowsocks</td><td class="mono">' + esc(host + ':' + c.ss.port) +
+      '</td><td class="mono">' + esc(c.ss.method) + '</td>' +
+      '<td><button data-copy="' + esc(c.ss.uri || '') + '">copy ss://</button></td></tr>');
+  }
+  if (c.socks5) {
+    rows.push('<tr><td>SOCKS5</td><td class="mono">' + esc(host + ':' + c.socks5.port) +
+      '</td><td class="mono">none</td>' +
+      '<td><button data-copy="' + esc(host + ':' + c.socks5.port) + '">copy host:port</button></td></tr>');
+  }
+  $('#conn-rows').innerHTML = rows.join('');
+  $('#ss-uri').textContent = (c.ss && c.ss.uri) || '';
+  $('#conn-hint').textContent =
+    c.host_source === 'env' ? 'host from PUBLIC_HOST env' :
+    c.host_source === 'auto' ? 'host auto-detected (public IP, cached 10 min)' :
+    c.host_source === 'local' ? 'WARNING: only the local/bridge IP detected — set PUBLIC_HOST in .env' :
+    'host not detected — set PUBLIC_HOST in .env';
 }
 
 async function loadStrategies() {
@@ -162,6 +222,10 @@ async function loadLog() {
 
 $('#log-src').addEventListener('change', loadLog);
 $('#refresh-log').addEventListener('click', loadLog);
+$('#conn-rows').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-copy]');
+  if (b) copyText(b.getAttribute('data-copy'));
+});
 
 setInterval(loadStatus, 5000);
 setInterval(loadLog, 5000);
