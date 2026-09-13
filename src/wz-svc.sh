@@ -7,6 +7,11 @@
 # =============================================================================
 set -u
 . /opt/webzapret/scripts/wz-common.sh
+
+# Never let child services inherit the apply lock (fd 9). If nfqws or another
+# daemon holds fd 9 open, subsequent strategy switches hang permanently on flock.
+exec 9>&- 2>/dev/null || true
+
 # effective exit mode comes from state, not env — recompute upstream endpoints
 EXIT_MODE=$(active_exit_mode)
 compute_upstream
@@ -91,6 +96,7 @@ render_all()
     mkdir -p "$WZ_CFG"
     EXIT_MODE=$(active_exit_mode)   # upstream endpoints follow the effective mode
     compute_upstream
+    log_module svc "rendering configs to $WZ_CFG (exit_mode=$EXIT_MODE)"
     render_ss_server_json > "$WZ_CFG/ss-server.json"
     render_sockd_conf > "$WZ_CFG/sockd.conf"
 
@@ -131,23 +137,24 @@ spawn_svc()
     # $1 name, $2 user ("" = root), $3.. cmdline
     local name=$1 user=$2 p
     shift 2
+    log_module "$name" "starting: $*"
     stop_svc "$name"
     if [ -z "$user" ] || [ "$user" = root ]; then
-        setsid "$@" >>"$WZ_LOG/$name.log" 2>&1 &
+        setsid "$@" 9>&- >>"$WZ_LOG/$name.log" 2>&1 &
     else
         setsid setpriv --reuid="$user" --regid="$user" --init-groups "$@" \
-            >>"$WZ_LOG/$name.log" 2>&1 &
+            9>&- >>"$WZ_LOG/$name.log" 2>&1 &
     fi
     p=$!
     echo "$p" > "$(pidfile "$name")"
     sleep 0.3
     if ! pid_alive "$p"; then
-        wz_err "service '$name' failed to start; tail of $name.log:"
+        log_err "$name" "failed to start; tail of $name.log:"
         tail -n 20 "$WZ_LOG/$name.log" 2>/dev/null | sed 's/^/    /'
         rm -f "$(pidfile "$name")"
         return 1
     fi
-    wz_log "service '$name' started (pid $p)"
+    log_module "$name" "started (pid $p)"
     return 0
 }
 
@@ -156,12 +163,17 @@ stop_svc()
     local name=$1 p i
     p=$(pid_read "$name")
     if pid_alive "$p"; then
+        log_module "$name" "stopping (pid $p)"
         kill "$p" 2>/dev/null
         for i in 1 2 3 4 5; do
             pid_alive "$p" || break
             sleep 0.2
         done
-        pid_alive "$p" && kill -9 "$p" 2>/dev/null
+        if pid_alive "$p"; then
+            log_module "$name" "escalating to SIGKILL (pid $p)"
+            kill -9 "$p" 2>/dev/null
+        fi
+        log_module "$name" "stopped"
     fi
     rm -f "$(pidfile "$name")"
 }
@@ -187,9 +199,10 @@ start_sockd()
         done
     fi
     if [ -z "$bin" ]; then
-        wz_err "dante (sockd) binary not found — is the dante-server package installed?"
+        log_err sockd "dante (sockd) binary not found — is the dante-server package installed?"
         return 1
     fi
+    log_module sockd "using binary: $bin"
 
     # Полностью очищаем старые системные конфиги и ссылки во избежание коллизий
     rm -f /etc/sockd.conf
@@ -231,17 +244,19 @@ start_nfqws()
 {
     local sid opt
     sid=$(active_strategy)
+    log_module nfqws "resolved strategy: '$sid'"
     if ! valid_strategy_id "$sid"; then
-        wz_err "strategy '$sid' not found in strategies.json; falling back to 'none'"
+        log_err nfqws "strategy '$sid' not found in strategies.json; falling back to 'none'"
         sid=none
         echo "$sid" > "$WZ_STATE/strategy"
     fi
     opt=$(strategy_opt "$sid")
     if [ -z "$opt" ]; then
-        wz_log "strategy '$sid' disables nfqws"
+        log_module nfqws "strategy '$sid' disables nfqws — keeping stopped"
         stop_svc nfqws
         return 0
     fi
+    log_module nfqws "nfqws options: $opt"
     # shellcheck disable=SC2086  # nfqws options intentionally word-split
     spawn_svc nfqws "" /opt/webzapret/bin/nfqws --qnum=$QNUM_TCP \
         --dpi-desync-fwmark=$DESYNC_MARK --debug=1 $opt
@@ -272,13 +287,14 @@ start_one()
         ss-server) fn=start_ss_server ;;
         ss-local)  fn=start_ss_local ;;
         sockd|nfqws|redsocks|udprelay) fn=start_$1 ;;
-        *) wz_err "unknown service '$1'"; return 2 ;;
+        *) log_err svc "unknown service '$1'"; return 2 ;;
     esac
     $fn
 }
 
 cmd_start()
 {
+    log_module svc "starting all services"
     local s
     for s in ss-server sockd; do start_one "$s"; done
     # exit layer + nfqws
@@ -287,6 +303,7 @@ cmd_start()
 
 cmd_stop()
 {
+    log_module svc "stopping all services"
     local s
     for s in nfqws udprelay ss-local redsocks sockd ss-server; do stop_svc "$s"; done
 }

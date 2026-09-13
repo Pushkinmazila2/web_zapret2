@@ -26,6 +26,7 @@ UID_EXIT=$(id -u exituser 2>/dev/null || echo 1002)
 # ---------------------------------------------------------------------------
 fw_flush()
 {
+    log_module fw "flushing firewall chains and policy routing"
     # remove our chain references
     $IPT -t mangle -D OUTPUT -j WZFW 2>/dev/null || true
     $IPT -t mangle -D PREROUTING -j NFQIN 2>/dev/null || true
@@ -65,6 +66,7 @@ nfq_rule()
 
 fw_apply()
 {
+    log_module fw "applying firewall for exit mode '$MODE' (ports: tcp=$NFQ_TCP_PORTS, udp=$NFQ_UDP_PORTS)"
     mkdir -p "$WZ_RUN"
 
     # ---- mangle/WZFW: our own chain, hooked into OUTPUT ----

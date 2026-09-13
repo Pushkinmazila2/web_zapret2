@@ -46,7 +46,7 @@ cp /opt/webzapret/config/strategies.json "$WZ_CFG/strategies.json"
 # docker sysctls when permitted. Non-fatal here: on the host it is often
 # already enabled.
 sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || \
-    wz_err "sysctl ip_forward denied (host restriction?) - upstream NAT may need it"
+    log_err entry "sysctl ip_forward denied (host restriction?) - upstream NAT may need it"
 sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1 || true
 # tun device (ioctl TUNSETIFF handled by wz-udprelay; CAP set on the binary)
 if [ ! -c /dev/net/tun ]; then
@@ -66,13 +66,13 @@ fi
 /opt/webzapret/scripts/wz-svc.sh start udprelay || true
 
 /opt/webzapret/scripts/wz-fw.sh start || {
-    wz_err "firewall could not be installed (NFQUEUE/netfilter unavailable?)"
-    wz_err "verify: --cap-add NET_ADMIN NET_RAW, kernel nfnetlink loaded"
+    log_err entry "firewall could not be installed (NFQUEUE/netfilter unavailable?)"
+    log_err entry "verify: --cap-add NET_ADMIN NET_RAW, kernel nfnetlink loaded"
     exit 1
 }
 
 /opt/webzapret/scripts/wz-svc.sh start nfqws || {
-    wz_err "nfqws failed to start; showing status:"
+    log_err entry "nfqws failed to start; showing status:"
     /opt/webzapret/scripts/wz-svc.sh status
     exit 1
 }
@@ -86,7 +86,7 @@ echo "$PANEL_PID" > "$(pidfile panel)"
 
 cleanup()
 {
-    wz_log "shutting down..."
+    log_module entry "shutting down..."
     kill "$PANEL_PID" 2>/dev/null || true
     /opt/webzapret/scripts/wz-svc.sh stop 2>/dev/null || true
     /opt/webzapret/scripts/wz-fw.sh stop 2>/dev/null || true
@@ -94,10 +94,10 @@ cleanup()
 }
 trap cleanup INT TERM EXIT
 
-wz_log "web_zapret2 ready. exit_mode=$EXIT_MODE strategy=$STRATEGY"
+log_module entry "web_zapret2 ready. exit_mode=$EXIT_MODE strategy=$STRATEGY"
 
-# stream logs to stdout for docker logs; wait until container is stopped
-tail -F "$WZ_LOG/nfqws.log" "$WZ_LOG/ss-server.log" "$WZ_LOG/sockd.log" \
+# stream logs to stdout for docker logs; include the shared actions log
+tail -F "$WZ_LOG/actions.log" "$WZ_LOG/nfqws.log" "$WZ_LOG/ss-server.log" "$WZ_LOG/sockd.log" \
     "$WZ_LOG/panel.log" /dev/null 2>/dev/null &
 TAIL_PID=$!
 while kill -0 "$TAIL_PID" 2>/dev/null || kill -0 "$PANEL_PID" 2>/dev/null; do

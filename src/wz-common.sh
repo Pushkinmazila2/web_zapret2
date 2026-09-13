@@ -84,10 +84,39 @@ compute_upstream()
 compute_upstream
 
 # ---------------------------------------------------------------------------
-# helpers
+# helpers and tagged action logging
 # ---------------------------------------------------------------------------
-wz_log() { echo "[$(date -u +%FT%TZ)] $*"; }
-wz_err() { echo "[$(date -u +%FT%TZ)] ERROR: $*" >&2; }
+WZ_ACTIONS_LOG="$WZ_LOG/actions.log"
+
+_actions_append()
+{
+    printf '%s\n' "$1" >> "$WZ_ACTIONS_LOG" 2>/dev/null || true
+}
+
+# log_module <module> <message...>
+# Outputs a timestamped, tagged line to stdout and appends it to actions.log.
+log_module()
+{
+    local mod=$1 line
+    shift
+    line="[$(date -u +%FT%TZ)] [$mod] $*"
+    echo "$line"
+    _actions_append "$line"
+}
+
+# log_err <module> <message...>
+# Outputs an error line to stderr and appends it to actions.log.
+log_err()
+{
+    local mod=$1 line
+    shift
+    line="[$(date -u +%FT%TZ)] [$mod] ERROR: $*"
+    echo "$line" >&2
+    _actions_append "$line"
+}
+
+wz_log() { log_module "wz" "$*"; }
+wz_err() { log_err "wz" "$*"; }
 
 valid_exit_mode()
 {

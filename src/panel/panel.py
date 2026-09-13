@@ -119,11 +119,13 @@ def active_exit_mode():
 
 
 def apply(args):
+    print("panel: apply: %s" % " ".join(args), flush=True)
     try:
         r = subprocess.run(
             [APPLY] + args,
             capture_output=True, text=True, timeout=90,
         )
+        print("panel: apply rc=%d ok=%s" % (r.returncode, r.returncode == 0), flush=True)
         return {
             "ok": r.returncode == 0,
             "rc": r.returncode,
@@ -131,7 +133,56 @@ def apply(args):
             "stderr": (r.stderr or "")[-2000:],
         }
     except subprocess.TimeoutExpired:
+        print("panel: apply TIMED OUT (90s): %s" % " ".join(args), flush=True)
         return {"ok": False, "rc": -1, "stdout": "", "stderr": "timed out (90s)"}
+
+
+_TS_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]")
+LOG_MODULES = ["actions", "ss-server", "sockd", "nfqws", "redsocks", "ss-local", "udprelay", "panel"]
+
+
+def _read_file_lines(path, max_bytes=256 * 1024):
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            data = f.read().decode("utf-8", "replace")
+        lines = data.splitlines()
+        if size > max_bytes and lines:
+            lines = lines[1:]                    # drop a possibly truncated line
+        return lines
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        return ["(log read error: %s)" % e]
+
+
+def merged_log(n=200):
+    """Merged, time-ordered view of all module logs with [module] tags.
+
+    Lines without timestamps inherit the last known timestamp from their
+    file so multi-line entries stay grouped.
+    """
+    entries = []
+    for rank, mod in enumerate(LOG_MODULES):
+        path = os.path.join(WZ_LOG, mod + ".log")
+        lines = _read_file_lines(path, 64 * 1024 if mod != "actions" else 256 * 1024)
+        if lines is None:
+            continue
+        last_ts = ""
+        for seq, ln in enumerate(lines):
+            m = _TS_RE.match(ln)
+            if m:
+                last_ts = m.group(1)
+            # The actions.log already has tags embedded like [apply], [nfqws]
+            tag_prefix = "" if mod == "actions" else ("[%s] " % mod)
+            entries.append((last_ts, rank, seq, tag_prefix + ln))
+
+    entries.sort(key=lambda e: (e[0], e[1], e[2]))
+    if not entries:
+        return "(no log entries available across modules)\n"
+    return "\n".join(e[3] for e in entries[-n:]) + "\n"
 
 
 def tail_log(src, n=200):
@@ -142,21 +193,13 @@ def tail_log(src, n=200):
         n = 200
     if not re.fullmatch(r"[a-z0-9_-]{1,64}", src or ""):
         return "(bad log source)"
+    if src == "all":
+        return merged_log(n)
     path = os.path.join(WZ_LOG, src + ".log")
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            f.seek(max(0, size - 256 * 1024))   # read at most the last 256 KiB
-            data = f.read().decode("utf-8", "replace")
-        lines = data.splitlines()
-        if size > 256 * 1024 and lines:
-            lines = lines[1:]                    # drop a possibly truncated line
-        return "\n".join(lines[-n:]) + "\n"
-    except FileNotFoundError:
-        return "(no log for %s)" % src
-    except Exception as e:
-        return "(log read error: %s)" % e
+    lines = _read_file_lines(path, 256 * 1024)
+    if lines is None:
+        return "(no log for %s)\n" % src
+    return "\n".join(lines[-n:]) + "\n"
 
 
 _IP_CACHE = {"host": "", "source": "", "ts": 0.0}
@@ -578,7 +621,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/logs":
             q = dict(pair.split("=", 1) for pair in
                      self.path.split("?", 1)[1].split("&") if "=" in pair)
-            src = q.get("src", "nfqws")
+            src = q.get("src", "all")
             try:
                 n = int(q.get("n", "200") or "200")
             except ValueError:

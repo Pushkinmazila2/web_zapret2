@@ -12,6 +12,7 @@ set -uo pipefail
 . /opt/webzapret/scripts/wz-common.sh
 
 WZ_APPLY_LOCK="${WZ_RUN}/wz-apply.lock"
+WZ_LOCK_WAIT="${WZ_LOCK_WAIT:-30}"
 
 state_write()
 {
@@ -21,13 +22,21 @@ state_write()
     printf '%s\n' "$2" > "$tmp"
     mv -f "$tmp" "$WZ_STATE/$1"
     chmod 0640 "$WZ_STATE/$1"
+    log_module apply "state updated: $1=$2"
 }
 
 with_lock()
 {
-    # expose apply+restart loop atomic against concurrent panel requests
+    # serialize apply/restart loops against concurrent panel requests.
+    # A timeout prevents permanent wedging if another process stalls.
+    # Child processes spawned during apply (services) MUST have fd 9 closed
+    # so they do not inherit the lock and hold it forever.
     (
-        flock -x 9 || exit 1
+        if ! flock -w "$WZ_LOCK_WAIT" 9; then
+            log_err apply "apply lock busy after ${WZ_LOCK_WAIT}s — another operation in progress? aborting"
+            exit 1
+        fi
+        log_module apply "lock acquired: $*"
         "$@"
     ) 9>"$WZ_APPLY_LOCK"
 }
@@ -35,32 +44,39 @@ with_lock()
 do_strategy()
 {
     local id=$1 new
-    valid_strategy_id "$id" || { echo "ERROR: unknown strategy '$id'" >&2; return 2; }
+    valid_strategy_id "$id" || { log_err apply "unknown strategy '$id'"; return 2; }
     new=$(cat "$WZ_STATE/strategy" 2>/dev/null || echo "")
-    [ "$new" = "$id" ] && { echo "strategy '$id' already active"; return 0; }
+    if [ "$new" = "$id" ]; then
+        log_module apply "strategy '$id' already active — no restart needed"
+        return 0
+    fi
 
+    log_module apply "switching strategy '$new' -> '$id'"
     state_write strategy "$id"
-    echo "applying strategy '$id', restarting nfqws..."
+    log_module apply "restarting nfqws..."
     /opt/webzapret/scripts/wz-svc.sh restart nfqws
-    echo "nfqws restarted with strategy '$id'"
-    [ "$(active_strategy)" = "$id" ] || return 3
-    return 0
+    if [ "$(active_strategy)" = "$id" ]; then
+        log_module apply "nfqws restarted with strategy '$id'"
+        return 0
+    fi
+    log_err apply "failed to activate strategy '$id'"
+    return 3
 }
 
 do_exit()
 {
     local mode=$1
-    valid_exit_mode "$mode" || { echo "ERROR: unknown exit mode '$mode' (direct|socks5|ss)" >&2; return 2; }
+    valid_exit_mode "$mode" || { log_err apply "unknown exit mode '$mode' (direct|socks5|ss)"; return 2; }
     if [ "$(active_exit_mode)" = "$mode" ]; then
-        echo "exit mode '$mode' already active"
+        log_module apply "exit mode '$mode' already active"
         return 0
     fi
 
+    log_module apply "changing exit mode to '$mode'..."
     state_write exit_mode "$mode"
-    echo "changing exit mode to '$mode'..."
     /opt/webzapret/scripts/wz-svc.sh render
 
-    echo "restarting exit layer (brings utun up for the UDP relay)..."
+    log_module apply "restarting exit layer (brings utun up for the UDP relay)..."
     /opt/webzapret/scripts/wz-svc.sh restart redsocks || true
     /opt/webzapret/scripts/wz-svc.sh restart ss-local || true
     /opt/webzapret/scripts/wz-svc.sh restart udprelay || true
@@ -68,12 +84,12 @@ do_exit()
     # Accumulate counters into state files before firewall reload (which resets them)
     accumulate_traffic_counters
 
-    echo "reloading firewall..."
-    /opt/webzapret/scripts/wz-fw.sh start || { echo "ERROR: firewall apply failed" >&2; return 3; }
+    log_module apply "reloading firewall..."
+    /opt/webzapret/scripts/wz-fw.sh start || { log_err apply "firewall apply failed"; return 3; }
 
-    echo "restarting nfqws with the new mode..."
+    log_module apply "restarting nfqws with the new mode..."
     /opt/webzapret/scripts/wz-svc.sh restart nfqws
-    echo "exit mode is now '$mode'"
+    log_module apply "exit mode is now '$mode'"
     return 0
 }
 
