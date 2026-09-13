@@ -5,17 +5,28 @@ import sys
 
 
 def native_options(text, protocol=""):
+    """Convert strategy text to native zapret2 arguments.
+    
+    If text already contains --lua-desync or --payload, pass through as-is.
+    Otherwise convert legacy --dpi-desync format to Lua equivalents.
+    """
     args = shlex.split(text)
-    if not any(a.startswith("--dpi-desync") for a in args):
+    if not args:
+        return []
+    
+    # Check if this is already a native Lua strategy
+    has_lua = any(a.startswith("--lua-desync=") or a.startswith("--payload=") for a in args)
+    has_legacy = any(a.startswith("--dpi-desync") for a in args)
+    
+    if has_lua or not has_legacy:
+        # Already native format or no desync options - pass through
         if args and protocol and not any(a.startswith("--filter-") for a in args):
             proto = protocol.upper()
             prefix = "--filter-udp=443" if "QUIC" in proto or "UDP" in proto else (
                 "--filter-tcp=80" if proto.startswith("HTTP") and not proto.startswith("HTTPS") and "TLS" not in proto else "--filter-tcp=443")
             args.insert(0, prefix)
         return args
-    if not args:
-        return []
-    # Keep old profiles usable while making the Lua engine the execution path.
+    # Legacy format conversion: --dpi-desync to --lua-desync
     profiles = [[]]
     for arg in args:
         if arg == "--new":
