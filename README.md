@@ -1,6 +1,6 @@
 # web_zapret2
 
-Stage 1 — an **isolated, containerized gateway** built on **zapre
+Stage 1 — an **isolated, containerized gateway** built on **zapret2**.
 It accepts **TCP/UDP** traffic via **Shadowsocks** and **SOCKS5**, pushes it
 through **NFQWS2** (DPI desync), and then egresses either **directly** to the
 internet or through an **upstream Shadowsocks / SOCKS5 proxy**. A lightweight
@@ -31,9 +31,9 @@ single-file **HTML panel** swaps the zapret **strategy** and restarts nfqws.
 
 - **Access**: Shadowsocks server (`shadowsocks-libev`) and SOCKS5 (`dante`)
   in one container; both TCP and UDP.
-- **DPI**: `nfqws` from current `bol-van/zapret` master (pinned commit),
-  NFQUEUE 200/201, desync of the first N packets per flow (zapret semantics),
-  `--dpi-desync-fwmark` loop protection, IPv4.
+- **DPI**: native `nfqws2` from `bol-van/zapret2` (pinned commit),
+  NFQUEUE 200 for both TCP and UDP, desync of the first N packets per flow,
+  `--fwmark` loop protection, IPv4.
 - **Exit** (switchable live, persists in a docker volume):
   - `direct` — everything leaves via the container default route, desynced.
   - `socks5` — TCP via `redsocks` (SO_ORIGINAL_DST), UDP via a bundled
@@ -89,12 +89,31 @@ Everything lives in `.env` (see `.env.example`). Important variables:
 
 ### Strategies
 
-`config/strategies.json` — each entry maps an id to the exact nfqws options
-(`--filter-tcp=... --dpi-desync=... --new ...`). The active strategy id is
+`config/strategies.json` — each entry maps an id to zapret2 profile options
+(`--filter-tcp=... --payload=... --lua-desync=... --new ...`). The active strategy id is
 stored in `/opt/webzapret/state/strategy` (docker volume `wz-state` makes it
 persistent). Changing it via the panel: writes the id, then **restarts nfqws**
 with the new options (`/opt/webzapret/scripts/wz-apply.sh strategy <id>`).
-`none` stops nfqws (pure passthrough, useful for diagnostics).
+`none` stops nfqws2 (pure passthrough, useful for diagnostics). Legacy
+`nfqws_opt` entries are converted at startup by `src/strategy.py`; imported
+zapret2 entries retain their original `--lua-desync` program.
+
+### Lua scripts
+
+The image includes `zapret-lib.lua`, `zapret-antidpi.lua`, and
+`zapret-auto.lua` from the same pinned zapret2 revision. Every nfqws2 process
+loads these libraries with `--lua-init=@...`; strategy profiles invoke their
+functions through `--lua-desync`. Additional project Lua files can be copied
+into the image and referenced by a strategy's `lua_init` field when custom
+profiles are added.
+
+`lua_init` is a JSON array of absolute container paths, loaded in order after
+the bundled libraries. Mount custom scripts read-only or include them under
+`config/` (available at `/opt/webzapret/config/`). `lua_opt` accepts native
+arguments, including quoted inline `--lua-init` code and `--blob`. Lua is
+executable code, not a safe data format: only import trusted strategies and
+protect the panel with authentication. The current firewall intercepts only
+outgoing traffic; scripts requiring incoming packets need additional rules.
 
 ## How the pieces fit together
 

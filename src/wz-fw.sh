@@ -49,6 +49,8 @@ fw_flush()
 nfq_rule()
 {
     local uid=$1 proto=$2 ports=$3 qnum=$4 pktlim=$5
+    [ "$(active_strategy)" = none ] && return 0
+    qnum=$QNUM_TCP
     if [ -n "$pktlim" ] && [ "$pktlim" -gt 0 ] 2>/dev/null; then
         $IPT -t mangle -A WZFW -p "$proto" -m owner --uid-owner "$uid" \
             -m multiport --dports "$ports" \

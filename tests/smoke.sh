@@ -19,12 +19,16 @@ ok()   { echo "   ok: $*"; }
 bad()  { echo "   FAIL: $*" >&2; FAIL=1; }
 
 step "1. binaries"
-for b in /opt/webzapret/bin/nfqws /usr/bin/ss-server /usr/sbin/sockd \
+for b in /opt/webzapret/bin/nfqws2 /usr/bin/ss-server /usr/sbin/sockd \
          /usr/sbin/redsocks /usr/bin/ss-local /opt/webzapret/bin/wz-udprelay; do
     [ -x "$b" ] && ok "$b" || bad "missing executable $b"
 done
-/opt/webzapret/bin/nfqws --version >/dev/null 2>&1 && ok "nfqws --version" \
-    || bad "nfqws --version failed"
+/opt/webzapret/bin/nfqws2 --version >/dev/null 2>&1 && ok "nfqws2 --version" \
+    || bad "nfqws2 --version failed"
+for lua in zapret-lib.lua zapret-antidpi.lua zapret-auto.lua; do
+    [ -s "/opt/webzapret/lua/$lua" ] && ok "Lua library $lua" \
+        || bad "missing Lua library /opt/webzapret/lua/$lua"
+done
 
 step "2. services up"
 for s in ss-server sockd nfqws; do

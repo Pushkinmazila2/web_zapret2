@@ -242,7 +242,8 @@ start_udprelay()
 
 start_nfqws()
 {
-    local sid opt
+    local sid argfile
+    local args=()
     sid=$(active_strategy)
     log_module nfqws "resolved strategy: '$sid'"
     if ! valid_strategy_id "$sid"; then
@@ -250,16 +251,21 @@ start_nfqws()
         sid=none
         echo "$sid" > "$WZ_STATE/strategy"
     fi
-    opt=$(strategy_opt "$sid")
-    if [ -z "$opt" ]; then
+    if [ "$sid" = none ]; then
         log_module nfqws "strategy '$sid' disables nfqws — keeping stopped"
         stop_svc nfqws
         return 0
     fi
-    log_module nfqws "nfqws options: $opt"
-    # shellcheck disable=SC2086  # nfqws options intentionally word-split
-    spawn_svc nfqws "" /opt/webzapret/bin/nfqws --qnum=$QNUM_TCP \
-        --dpi-desync-fwmark=$DESYNC_MARK --debug=1 $opt
+    argfile=$(mktemp "$WZ_RUN/strategy.XXXXXX") || return 1
+    python3 "$WZ_SRC/scripts/strategy.py" "$sid" > "$argfile" || { rm -f "$argfile"; return 1; }
+    mapfile -d '' -t args < "$argfile"
+    rm -f "$argfile"
+    local base=("--qnum=$QNUM_TCP" "--fwmark=$DESYNC_MARK" --debug=1
+        "--lua-init=@$WZ_SRC/lua/zapret-lib.lua"
+        "--lua-init=@$WZ_SRC/lua/zapret-antidpi.lua"
+        "--lua-init=@$WZ_SRC/lua/zapret-auto.lua")
+    log_module nfqws "nfqws2 options: ${args[*]}"
+    spawn_svc nfqws "" "$WZ_BIN/nfqws2" "${base[@]}" "${args[@]}"
 }
 
 # ---------------------------------------------------------------------------

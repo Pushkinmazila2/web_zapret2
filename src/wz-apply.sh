@@ -54,12 +54,14 @@ do_strategy()
     log_module apply "switching strategy '$new' -> '$id'"
     state_write strategy "$id"
     log_module apply "restarting nfqws..."
-    /opt/webzapret/scripts/wz-svc.sh restart nfqws
-    if [ "$(active_strategy)" = "$id" ]; then
+    if /opt/webzapret/scripts/wz-svc.sh restart nfqws; then
+        /opt/webzapret/scripts/wz-fw.sh start || return 3
         log_module apply "nfqws restarted with strategy '$id'"
         return 0
     fi
     log_err apply "failed to activate strategy '$id'"
+    state_write strategy "$new"
+    /opt/webzapret/scripts/wz-svc.sh restart nfqws || true
     return 3
 }
 

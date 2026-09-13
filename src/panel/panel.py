@@ -20,6 +20,7 @@ import hmac
 import json
 import os
 import re
+import shlex
 import socket
 import struct
 import subprocess
@@ -464,10 +465,13 @@ def import_strategy_from_json(data):
 
             protocol = s.get("protocol", "HTTPS/TLS1.2")
             original_args = s.get("args", "")
-            nfqws_opt = translate_nfqws_args(original_args, protocol)
+            if not isinstance(original_args, str) or not original_args.strip():
+                raise ValueError("Strategy args must be a non-empty string")
+            shlex.split(original_args)
+            nfqws_opt = original_args
 
             # Detect if translation was needed
-            translated = "--payload=" in original_args or "--lua-desync=" in original_args
+            translated = False
 
             new_strategy = {
                 "id": strategy_id,
@@ -479,6 +483,8 @@ def import_strategy_from_json(data):
                     " [args translated from zapret2 test format]" if translated else "",
                 ),
                 "nfqws_opt": nfqws_opt,
+                "lua_opt": original_args if "--lua-desync=" in original_args else "",
+                "protocol": protocol,
                 "imported": True,
                 "import_time": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "import_original_args": original_args,
@@ -517,7 +523,8 @@ def status():
         "strategy": {
             "id": strat,
             "name": entry.get("name", strat),
-            "nfqws_opt": entry.get("nfqws_opt", ""),
+            "nfqws_opt": entry.get("lua_opt") or entry.get("nfqws_opt", ""),
+            "lua_init": entry.get("lua_init", []),
         },
         "services": [service_state(s) for s in SERVICES],
         "devices": conns,
