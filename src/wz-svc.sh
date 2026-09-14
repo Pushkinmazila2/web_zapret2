@@ -184,7 +184,8 @@ stop_svc()
 start_ss_server()
 {
     render_ss_server_json > "$WZ_CFG/ss-server.json"
-    spawn_svc ss-server proxy /usr/bin/ss-server -c "$WZ_CFG/ss-server.json"
+    # -v: connection-level logging (accept/close + client endpoint) to ss-server.log
+    spawn_svc ss-server proxy /usr/bin/ss-server -c "$WZ_CFG/ss-server.json" -v
 }
 start_sockd()
 {
@@ -227,14 +228,15 @@ start_ss_local()
 {
     [ "$(active_exit_mode)" = ss ] || return 0
     [ -f "$WZ_CFG/ss-local.json" ] || render_all
-    spawn_svc ss-local exituser /usr/bin/ss-local -c "$WZ_CFG/ss-local.json" -u
+    # -v: connection-level logging (each upstream tunnel) to ss-local.log
+    spawn_svc ss-local exituser /usr/bin/ss-local -c "$WZ_CFG/ss-local.json" -u -v
 }
 
 start_udprelay()
 {
     [ "$(active_exit_mode)" = direct ] && return 0
     [ "$UDP_PROXY" = relay ] || return 0
-    local args=(--tun "$UTUN" --socks-host "$UP_TR_HOST" --socks-port "$UP_TR_PORT")
+    local args=(--tun "$UTUN" --socks-host "$UP_TR_HOST" --socks-port "$UP_TR_PORT" --verbose)
     [ -n "${UPSTREAM_SOCKS5_USER:-}" ] && args+=(--socks-user "$UPSTREAM_SOCKS5_USER")
     [ -n "${UPSTREAM_SOCKS5_PASSWORD:-}" ] && args+=(--socks-password "$UPSTREAM_SOCKS5_PASSWORD")
     spawn_svc udprelay exituser /opt/webzapret/bin/wz-udprelay "${args[@]}"
@@ -260,6 +262,7 @@ start_nfqws()
     python3 "$WZ_SRC/scripts/strategy.py" "$sid" > "$argfile" || { rm -f "$argfile"; return 1; }
     mapfile -d '' -t args < "$argfile"
     rm -f "$argfile"
+    # --debug=1: connection-level nfqws logging (per-flow acks to nfqws.log)
     local base=("--qnum=$QNUM_TCP" "--fwmark=$DESYNC_MARK" --debug=1
         "--lua-init=@$WZ_SRC/lua/zapret-lib.lua"
         "--lua-init=@$WZ_SRC/lua/zapret-antidpi.lua"

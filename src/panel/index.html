@@ -84,6 +84,7 @@ textarea { background:#121a26; color:var(--fg); border:1px solid #33455b; border
       <option>nfqws</option><option>ss-server</option><option>sockd</option>
       <option>redsocks</option><option>ss-local</option><option>udprelay</option><option>panel</option>
     </select>
+    <button id="export-log">export all logs (.log)</button>
     <button id="refresh-log">refresh</button>
     <span class="status">auto: 5s</span>
   </p>
@@ -284,6 +285,19 @@ async function loadLog() {
 
 $('#log-src').addEventListener('change', loadLog);
 $('#refresh-log').addEventListener('click', loadLog);
+
+// One-click export: downloads the merged connection log of ALL modules as a
+// single .log file. Same-origin GET carries the browser's cached Basic auth.
+function exportLogs() {
+  const a = document.createElement('a');
+  a.href = '/api/logs/export';
+  a.download = 'webzapret-logs-' + new Date().toISOString().replace(/[:.]/g, '-') + '.log';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  toast('export started — check your downloads');
+}
+$('#export-log').addEventListener('click', exportLogs);
 $('#conn-rows').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-copy]');
   if (b) copyText(b.getAttribute('data-copy'));

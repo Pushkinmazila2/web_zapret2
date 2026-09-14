@@ -41,8 +41,8 @@ single-file **HTML panel** swaps the zapret **strategy** and restarts nfqws.
   - `ss` — TCP via `redsocks` -> local `ss-local`, UDP via `wz-udprelay` ->
     `ss-local`. The upstream tunnel itself is desynced by nfqws.
 - **Panel** (`http://<host>:8080`): strategy picker (apply = write state +
-  **restart nfqws**), exit-mode radio, service status, live logs, optional
-  Basic auth.
+  **restart nfqws**), exit-mode radio, service status, live logs, one-click
+  connection-log export (all modules, single file), optional Basic auth.
 
 ## Requirements (Docker host)
 
@@ -186,6 +186,18 @@ docker compose exec gateway tail -n 50 /var/log/webzapret/nfqws.log
 ```
 
 Logs: `/var/log/webzapret/{nfqws,ss-server,sockd,redsocks,ss-local,udprelay,panel}.log`
+
+**Connection-level logging is enabled by default**: `ss-server`/`ss-local`
+run with `-v`, Dante logs `connect`/`disconnect` events, `nfqws` runs with
+`--debug=1`, and `wz-udprelay` logs each UDP session open/close (`--verbose`).
+
+Export one merged file covering **all** modules:
+
+```bash
+curl -u "$PANEL_USER:$PANEL_PASSWORD" -OJ http://<host>:8080/api/logs/export
+```
+
+or click **export all logs (.log)** on the panel's Logs card.
 
 ## Troubleshooting
 

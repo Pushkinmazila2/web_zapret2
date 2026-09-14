@@ -12,6 +12,7 @@
  * Build: gcc -O2 -Wall -o wz-udprelay wz-udprelay.c -lpthread
  * ========================================================================*/
 #define _GNU_SOURCE
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,8 +43,9 @@ static pthread_mutex_t tun_mutex = PTHREAD_MUTEX_INITIALIZER;
 typedef struct {
     const char *tun_name, *socks_host, *user, *password;
     int socks_port;
+    int verbose;
 } Config;
-static Config Cfg = { "utun0", NULL, "", "", 1080 };
+static Config Cfg = { "utun0", NULL, "", "", 1080, 0 };
 
 static void die(const char *m)
 { fprintf(stderr, "%s: %s: %s\n", PROGNAME, m, strerror(errno)); exit(1); }
@@ -51,8 +53,33 @@ static void usage(void)
 {
     fprintf(stderr,
         "usage: %s --tun <name> --socks-host <ip> --socks-port <n> "
-        "[--socks-user u --socks-password p]\n", PROGNAME);
+        "[--socks-user u --socks-password p] [--verbose]\n", PROGNAME);
     exit(0);
+}
+
+/* ---- connection-level logging (timestamped, to stderr, gated by --verbose) */
+static void vlogf(const char *fmt, ...)
+{
+    va_list ap;
+    char ts[32];
+    time_t t = time(NULL);
+    struct tm tmv;
+
+    if (!Cfg.verbose) return;
+    gmtime_r(&t, &tmv);
+    strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", &tmv);
+    fprintf(stderr, "%s: [%s] ", PROGNAME, ts);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+}
+
+static void fmt_addr(char *buf, size_t n, uint32_t ip, uint16_t port)
+{
+    snprintf(buf, n, "%u.%u.%u.%u:%u",
+             (ip >> 24) & 0xff, (ip >> 16) & 0xff,
+             (ip >> 8) & 0xff, ip & 0xff, port);
 }
 
 /* ---------------- TUN ---------------- */
@@ -389,6 +416,12 @@ static void session_evict_one(void)
     }
     session_count--;
     oldest->closed = 1;
+    if (Cfg.verbose) {
+        char src[32], dst[32];
+        fmt_addr(src, sizeof(src), oldest->cip, oldest->cport);
+        fmt_addr(dst, sizeof(dst), oldest->tip, oldest->tport);
+        vlogf("udp session closed: %s -> %s (evicted, max=%d)", src, dst, SESSION_MAX);
+    }
     session_close_fds(oldest);
 }
 
@@ -424,6 +457,13 @@ static int session_create(uint32_t cip, uint16_t cport,
     sessions = s;
     session_count++;
     pthread_mutex_unlock(&list_mutex);
+
+    if (Cfg.verbose) {
+        char src[32], dst[32];
+        fmt_addr(src, sizeof(src), cip, cport);
+        fmt_addr(dst, sizeof(dst), tip, tport);
+        vlogf("udp session open: %s -> %s", src, dst);
+    }
     return 0;
 }
 
@@ -485,6 +525,12 @@ static void *reaper(void *arg)
                 if (prev) prev->next = next; else sessions = next;
                 session_count--;
                 s->closed = 1;
+                if (Cfg.verbose) {
+                    char src[32], dst[32];
+                    fmt_addr(src, sizeof(src), s->cip, s->cport);
+                    fmt_addr(dst, sizeof(dst), s->tip, s->tport);
+                    vlogf("udp session closed: %s -> %s (idle timeout)", src, dst);
+                }
                 session_close_fds(s);
             } else {
                 prev = s;
@@ -506,6 +552,7 @@ static void parse_args(int argc, char **argv)
         else if (strcmp(argv[i], "--socks-port") == 0 && i + 1 < argc)  Cfg.socks_port = atoi(argv[++i]);
         else if (strcmp(argv[i], "--socks-user") == 0 && i + 1 < argc)  Cfg.user       = argv[++i];
         else if (strcmp(argv[i], "--socks-password") == 0 && i + 1 < argc) Cfg.password = argv[++i];
+        else if (strcmp(argv[i], "--verbose") == 0) Cfg.verbose = 1;
         else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) usage();
         else { fprintf(stderr, "unknown option: %s\n", argv[i]); usage(); }
     }

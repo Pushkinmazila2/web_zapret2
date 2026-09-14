@@ -11,6 +11,7 @@ Endpoints
     GET  /api/exit                  current exit mode
     POST /api/exit {"mode": ...}    switch exit mode -> reload fw + restart
     GET  /api/logs?src=<svc>&n=<N>  tail a service log
+    GET  /api/logs/export           download one merged connection log (all modules)
     GET  /api/traffic               nfqws traffic counters (in/out bytes)
 
 CLI: python3 panel.py [--check] [--help]
@@ -159,16 +160,27 @@ def _read_file_lines(path, max_bytes=256 * 1024):
         return ["(log read error: %s)" % e]
 
 
-def merged_log(n=200):
-    """Merged, time-ordered view of all module logs with [module] tags.
+# Maximum bytes read from a single module log during an export. Bounds the
+# download size / memory for busy gateways while keeping "the whole log" for
+# typical traffic volumes.
+LOG_EXPORT_MAX_BYTES = 8 * 1024 * 1024
 
-    Lines without timestamps inherit the last known timestamp from their
-    file so multi-line entries stay grouped.
+
+def _collected_entries(tail_bytes):
+    """Return time-ordered, [module]-tagged entries across all module logs.
+
+    Each entry is (timestamp, module_rank, line_seq, text). Lines without
+    timestamps inherit the last known timestamp from their file so
+    multi-line entries stay grouped. ``tail_bytes`` sets how many bytes are
+    read per module log; it may be a callable(module) for per-module limits
+    or a plain int. The actions.log already carries its own [module] tags,
+    so it is never re-prefixed.
     """
     entries = []
     for rank, mod in enumerate(LOG_MODULES):
         path = os.path.join(WZ_LOG, mod + ".log")
-        lines = _read_file_lines(path, 64 * 1024 if mod != "actions" else 256 * 1024)
+        max_bytes = tail_bytes(mod) if callable(tail_bytes) else tail_bytes
+        lines = _read_file_lines(path, max_bytes)
         if lines is None:
             continue
         last_ts = ""
@@ -176,14 +188,52 @@ def merged_log(n=200):
             m = _TS_RE.match(ln)
             if m:
                 last_ts = m.group(1)
-            # The actions.log already has tags embedded like [apply], [nfqws]
             tag_prefix = "" if mod == "actions" else ("[%s] " % mod)
             entries.append((last_ts, rank, seq, tag_prefix + ln))
 
     entries.sort(key=lambda e: (e[0], e[1], e[2]))
+    return entries
+
+
+def merged_log(n=200):
+    """Merged, time-ordered view of all module logs with [module] tags.
+
+    Lines without timestamps inherit the last known timestamp from their
+    file so multi-line entries stay grouped.
+    """
+    entries = _collected_entries(
+        lambda mod: 256 * 1024 if mod == "actions" else 64 * 1024)
     if not entries:
         return "(no log entries available across modules)\n"
     return "\n".join(e[3] for e in entries[-n:]) + "\n"
+
+
+def export_logs():
+    """Full merged connection log across ALL modules as a single text blob.
+
+    Unlike merged_log() this is not truncated to the last N lines — every
+    module log is read (up to LOG_EXPORT_MAX_BYTES each) and merged in
+    time order, prefixed with a header explaining the contents.
+    """
+    lines = [e[3] for e in _collected_entries(LOG_EXPORT_MAX_BYTES)]
+    if not lines:
+        lines = ["(no log entries available across modules)"]
+    header = [
+        "# ================================================================",
+        "# web_zapret2 — connection log export (all modules, one file)",
+        "# generated: %s" % time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "# modules:   %s" % " ".join(LOG_MODULES),
+        "# fetch:     GET /api/logs/export  (HTTP Basic auth if enabled)",
+        "# ================================================================",
+    ]
+    for mod in LOG_MODULES:
+        try:
+            size = os.path.getsize(os.path.join(WZ_LOG, mod + ".log"))
+        except OSError:
+            size = -1
+        header.append("# %-10s %s bytes" % (mod, size if size >= 0 else "n/a"))
+    header.append("# ================================================================")
+    return "\n".join(header + lines) + "\n"
 
 
 def tail_log(src, n=200):
@@ -625,6 +675,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"mode": active_exit_mode()})
         if path == "/api/traffic":
             return self._send(200, get_traffic_stats())
+        if path == "/api/logs/export":
+            body = export_logs().encode("utf-8")
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Disposition",
+                             'attachment; filename="webzapret-logs-%s.log"' % stamp)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if path == "/api/logs":
             q = dict(pair.split("=", 1) for pair in
                      self.path.split("?", 1)[1].split("&") if "=" in pair)
