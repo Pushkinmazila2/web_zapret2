@@ -1,5 +1,7 @@
 {
   "_comment": "Curated zapret2 (nfqws) desync strategies. Each id once active is written into the nfqws command line. Special strategy 'none' disables nfqws. The web panel switches between these live (change -> restart nfqws).",
+
+  "_no_reasm_note": "A TLS strategy may set \"no_reasm\": true (optionally with \"no_reasm_payloads\": \"tls_client_hello,quic_initial\") to add --reasm-disable=... to the nfqws command line. Without it nfqws buffers and DROPS every packet of a TLS connection until the whole ClientHello reassembles; when a segment of a multi-segment ClientHello is lost the connection hangs forever (log lines 'DELAY desync until reasm is complete (#N)') - typical on low-MSS paths to YouTube/Google CDN hosts. no_reasm makes nfqws desync the first segment immediately and pass the rest through.",
   "strategies": [
     {
       "id": "standard",
@@ -59,13 +61,15 @@
       "id": "custom_disorder",
       "name": "custom_disorder",
       "desc": "custom_disorder.",
-      "lua_opt": "--filter-tcp=443 --payload=tls_client_hello --lua-desync=fake:blob=fake_default_tls:tcp_seq=-10000:tcp_ack=-66000:tcp_ts=-600000 --lua-desync=multidisorder:pos=1"
+      "lua_opt": "--filter-tcp=443 --payload=tls_client_hello --lua-desync=fake:blob=fake_default_tls:tcp_seq=-10000:tcp_ack=-66000:tcp_ts=-600000 --lua-desync=multidisorder:pos=1",
+      "no_reasm": true
     },
     {
       "id": "custom_youtubecom_20260824",
       "name": "Custom: youtube.com (HTTPS/TLS1.2)",
-      "desc": "Imported from youtube.com test results (100.0% success, 269ms latency) [args translated from zapret2 test format]",
+      "desc": "Imported from youtube.com test results (100.0% success, 269ms latency). no_reasm: desyncs the first ClientHello segment immediately instead of buffering the whole hello (prevents connection hangs on low-MSS paths).",
       "lua_opt": "--filter-tcp=443 --payload=tls_client_hello --lua-desync=fakeddisorder:pos=midsld:tcp_seq=1000000",
+      "no_reasm": true,
       "imported": true,
       "import_time": "2026-09-12 23:02:22",
       "import_original_args": "--payload=tls_client_hello --lua-desync=fakeddisorder:pos=midsld:tcp_seq=1000000"
@@ -73,8 +77,9 @@
     {
       "id": "custom_youtubecom_20260824_2",
       "name": "Custom: youtube.com (HTTPS/TLS1.2)",
-      "desc": "Imported from youtube.com test results (100.0% success, 272ms latency) [args translated from zapret2 test format]",
+      "desc": "Imported from youtube.com test results (100.0% success, 272ms latency). no_reasm: desyncs the first ClientHello segment immediately instead of buffering the whole hello (prevents connection hangs on low-MSS paths).",
       "lua_opt": "--filter-tcp=443 --payload=tls_client_hello --lua-desync=fake:blob=fake_default_tls:tcp_ack=-66000:tcp_ts_up:tls_mod=rnd,dupsid,padencap:repeats=1 --lua-desync=multidisorder:pos=1",
+      "no_reasm": true,
       "imported": true,
       "import_time": "2026-09-12 23:02:22",
       "import_original_args": "--payload=tls_client_hello --lua-desync=fake:blob=fake_default_tls:tcp_ack=-66000:tcp_ts_up:tls_mod=rnd,dupsid,padencap:repeats=1 --lua-desync=multidisorder:pos=1"

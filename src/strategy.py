@@ -1,5 +1,6 @@
 """Render strategy entries as native zapret2 command-line arguments."""
 import json
+import re
 import shlex
 import sys
 
@@ -88,6 +89,23 @@ def strategy_args(entry):
         if "\0" in arg or not arg.startswith("--") or arg.split("=", 1)[0] in {
             "--qnum", "--fwmark", "--daemon", "--pidfile", "--intercept", "--dry-run", "--version", "--chdir"}:
             raise ValueError("Invalid strategy argument: " + arg)
+
+    # no_reasm: prevent nfqws from buffering/dropping whole connections while it
+    # reassembles a multi-segment TLS ClientHello. Without this, nfqws queues and
+    # DROPS every packet of a TLS flow until the hello is complete; if one segment
+    # is lost (typical on low-MSS paths to YouTube/Google CDNs) the connection
+    # hangs forever ("DELAY desync until reasm is complete" in nfqws.log).
+    # --reasm-disable=... (nfqws2 global, payload-scoped) makes nfqws desync the
+    # first segment immediately and pass the remaining segments through.
+    if entry.get("no_reasm"):
+        payloads = (entry.get("no_reasm_payloads") or "tls_client_hello").split(",")
+        disabled = []
+        for p in payloads:
+            if not re.fullmatch(r"[a-z0-9_]+", p or ""):
+                raise ValueError("Invalid no_reasm_payloads token: " + repr(p))
+            disabled.append("--reasm-disable=" + p)
+        args = [a for a in args if not a.startswith("--reasm-disable=")] + disabled
+
     scripts = entry.get("lua_init", [])
     if not isinstance(scripts, list) or not all(isinstance(s, str) and s.startswith("/") and "\0" not in s for s in scripts):
         raise ValueError("lua_init must be a list of absolute container file paths")

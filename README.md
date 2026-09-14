@@ -98,6 +98,17 @@ with the new options (`/opt/webzapret/scripts/wz-apply.sh strategy <id>`).
 `nfqws_opt` entries are converted at startup by `src/strategy.py`; imported
 zapret2 entries retain their original `--lua-desync` program.
 
+A TLS strategy may set `"no_reasm": true` (optionally with
+`"no_reasm_payloads": "tls_client_hello,quic_initial"`). This appends
+`--reasm-disable=...` to the nfqws command line. Without it, nfqws buffers and
+**drops every packet** of a TLS connection until the whole ClientHello has been
+reassembled; if one segment of a multi-segment ClientHello is lost the
+connection hangs forever (nfqws log spam: `DELAY desync until reasm is
+complete`). This is typical on low-MSS paths to YouTube/Google CDN nodes and
+shows up as pages/images/videos that never load while the rest of the internet
+works. `no_reasm` makes nfqws desync the first ClientHello segment immediately
+and pass the rest of the segments through. The bundled YouTube strategies and
+all strategies imported through the panel are flagged this way automatically.
 ### Lua scripts
 
 The image includes `zapret-lib.lua`, `zapret-antidpi.lua`, and
@@ -208,6 +219,16 @@ or click **export all logs (.log)** on the panel's Logs card.
 - **nfqws runs but nothing is desynced**: check `wz-fw.sh status` — the
   `WZFW` chain must contain NFQUEUE rules, and the access processes must run
   as uid `proxy` (`ps -o user,cmd -C ss-server`).
+- **YouTube/Google pages never fully load while the rest of the internet
+  works**: this is nfqws waiting to reassemble the whole TLS ClientHello and
+  dropping every packet of the flow until it completes. In `nfqws.log` you see
+  repeated `DELAY desync until reasm is complete (#N)` for the same connection.
+  Multi-segment ClientHellos (large TLS 1.3/ECH hellos over low-MSS routes)
+  can lose a segment, so reassembly never finishes and the connection hangs.
+  Switch to a strategy with `"no_reasm": true` (both bundled YouTube
+  strategies have it) or add it to the strategy entry in
+  `config/strategies.json` — that renders `--reasm-disable=tls_client_hello`,
+  which desyncs the first segment immediately instead of buffering the hello.
 - **UDP relay not working**: verify the utun exists and the policy rule is
   installed (`ip rule show`, `ip route show table 100`), that
   `net.ipv4.conf.all.rp_filter=0` and `ip_forward=1` are set, and that

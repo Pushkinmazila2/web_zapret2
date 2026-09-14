@@ -522,6 +522,14 @@ def import_strategy_from_json(data):
 
             # Detect if translation was needed
             translated = False
+            # Imported TLS/HTTPS strategies desync on the TLS ClientHello. nfqws
+            # buffers and DROPS every packet until the whole hello reassembles; if
+            # a segment of a multi-segment hello is lost the connection hangs
+            # forever (YouTube/Google CDN hosts on low-MSS paths). New imports
+            # disable that reassembly so the first segment is desynced immediately.
+            tokens = shlex.split(original_args)
+            no_reasm = any("tls_client_hello" in t for t in tokens) or any(
+                t.startswith("--filter-tcp=443") for t in tokens)
 
             new_strategy = {
                 "id": strategy_id,
@@ -539,6 +547,10 @@ def import_strategy_from_json(data):
                 "import_time": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "import_original_args": original_args,
             }
+            # see no_reasm detection above; keep the flag on the saved strategy so
+            # nfqws renders it with --reasm-disable=<payload>
+            if no_reasm:
+                new_strategy["no_reasm"] = True
 
             # Replace any previous import of the same domain+date batch, append
             strat_data["strategies"] = [x for x in strat_data["strategies"]
