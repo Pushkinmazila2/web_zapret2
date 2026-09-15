@@ -38,6 +38,10 @@ fw_flush()
     $IPT -t mangle -X NFQIN 2>/dev/null || true
     $IPT -t nat     -F WZREDIR 2>/dev/null || true
     $IPT -t nat     -X WZREDIR 2>/dev/null || true
+    # the isolated strategy-test chain (wz-test.sh) — remove any leftover
+    $IPT -t mangle -D OUTPUT -j WZTEST 2>/dev/null || true
+    $IPT -t mangle -F WZTEST 2>/dev/null || true
+    $IPT -t mangle -X WZTEST 2>/dev/null || true
     # remove policy routing (both the scoped and any pre-scoping variant)
     $IP rule del from all uidrange $UID_PROXY-$UID_PROXY ipproto udp lookup $RT_TABLE_UDP 2>/dev/null || true
     $IP rule del from all uidrange $UID_PROXY-$UID_PROXY lookup $RT_TABLE_UDP 2>/dev/null || true

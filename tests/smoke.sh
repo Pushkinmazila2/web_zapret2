@@ -82,5 +82,29 @@ curl -fsS --max-time 60 -X POST http://127.0.0.1:8080/api/strategy \
       -H 'Content-Type: application/json' -d "{\"id\":\"$BEFORE\"}" >/dev/null 2>&1 && \
     ok "restored strategy '$BEFORE'" || bad "could not restore strategy '$BEFORE'"
 
+step "7. strategy test harness (isolated nfqws + yt-dlp)"
+if [ -x /opt/webzapret/scripts/wz-test.sh ]; then
+    WZTEST=$(/opt/webzapret/scripts/wz-test.sh --check 2>&1) && ok "wz-test.sh --check: $WZTEST" \
+        || bad "wz-test.sh --check failed: $WZTEST"
+else
+    bad "wz-test.sh missing"
+fi
+T=$(curl -fsS --max-time 5 http://127.0.0.1:8080/api/testinfo 2>/dev/null) && \
+    { echo "$T" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["test_url"].startswith("http"); assert isinstance(d["test_timeout"], int)' \
+        && ok "GET /api/testinfo defaults present" || bad "testinfo JSON invalid"; } || \
+    bad "GET /api/testinfo failed"
+
+# optional LIVE strategy test (set WZ_SMOKE_LIVE_TEST=1 to run; hits the real
+# Internet and can take up to a couple of minutes)
+if [ "${WZ_SMOKE_LIVE_TEST:-0}" = 1 ]; then
+    LIVE_ID=$(cat /opt/webzapret/state/strategy 2>/dev/null || echo standard)
+    R=$(curl -fsS --max-time 300 -X POST http://127.0.0.1:8080/api/strategy/test \
+        -H 'Content-Type: application/json' -d "{\"id\":\"$LIVE_ID\",\"timeout\":120}" 2>/dev/null)
+    echo "$R" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("ok");
+import sys as s; print("   test:", "PASS" if d.get("success") else "FAIL", "-", d.get("reason","")); 
+assert d.get("success"), "live test did not pass: %r" % d.get("reason")' \
+        && ok "live strategy test ($LIVE_ID) passed" || bad "live strategy test failed: $(echo "$R" | head -c 500)"
+fi
+
 echo
 [ "$FAIL" = 0 ] && echo "SMOKE OK" || { echo "SMOKE FAILED"; exit 1; }

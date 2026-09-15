@@ -29,11 +29,27 @@ th,td { text-align:left; padding:6px 10px; border-bottom:1px solid #26303e; }
 textarea { background:#121a26; color:var(--fg); border:1px solid #33455b; border-radius:6px;
            padding:8px; font:12px/1.4 var(--mono); width:100%; resize:vertical; }
 .scrollable { overflow-y:auto; overflow-x:hidden; }
+.tabs { display:flex; gap:6px; margin:16px 0 4px; flex-wrap:wrap; }
+.tab { border-radius:8px 8px 0 0; }
+.tab.active { background:var(--acc); border-color:var(--acc); color:#fff; }
+section.tab-page { display:none; }
+input[type=text], input[type=number] { background:#121a26; color:var(--fg);
+          border:1px solid #33455b; border-radius:6px; padding:7px 10px;
+          font:13px system-ui,sans-serif; }
+button[disabled] { opacity:.55; cursor:default; }
 </style>
 </head>
 <body>
 <h1>web_zapret2 &mdash; gateway panel</h1>
 
+<div class="tabs">
+  <button class="tab active" data-tab="status">Status</button>
+  <button class="tab" data-tab="strategy">Strategy</button>
+  <button class="tab" data-tab="test">Test</button>
+  <button class="tab" data-tab="logs">Logs</button>
+</div>
+
+<section class="tab-page" id="page-status">
 <div class="card">
   <label>Connection &mdash; client access</label>
   <p class="status">Devices connected (unique IPs, TCP): <b id="dev-count">?</b>
@@ -52,7 +68,9 @@ textarea { background:#121a26; color:var(--fg); border:1px solid #33455b; border
   <div id="exit-mode"></div>
   <p class="status" id="exit-hint"></p>
 </div>
+</section>
 
+<section class="tab-page" id="page-strategy">
 <div class="card">
   <label>Strategy &mdash; nfqws desync (applies with a zapret2 restart)</label>
   <select id="strategy" style="margin:6px 0 0; padding:7px 10px; background:#121a26; color:var(--fg); border:1px solid #33455b;"></select>
@@ -66,7 +84,40 @@ textarea { background:#121a26; color:var(--fg); border:1px solid #33455b; border
     <button id="import-strategy" style="margin-top:8px;">Import strategy</button>
   </div>
 </div>
+</section>
 
+<section class="tab-page" id="page-test">
+<div class="card">
+  <label>Strategy testing &mdash; isolated nfqws + yt-dlp</label>
+  <p class="status">Tests a strategy on a <b>separate test nfqws</b> process
+    (own NFQUEUE queue), so the live nfqws and the active strategy are never
+    touched. A small video is downloaded with yt-dlp and <b>deleted after the
+    test</b>. The strategy <b>standard</b> is a good control; <b>none</b> runs
+    the probe without any desync.</p>
+  <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end; margin:10px 0;">
+    <div style="flex:1 1 200px; min-width:200px;">
+      <label>Strategy to test</label>
+      <select id="test-strategy" style="width:100%; margin:4px 0; padding:7px 10px; background:#121a26; color:var(--fg); border:1px solid #33455b;"></select>
+    </div>
+    <div style="flex:2 1 320px; min-width:280px;">
+      <label>Test URL &mdash; video checked by yt-dlp</label>
+      <input id="test-url" type="text" style="width:100%; margin:4px 0;" placeholder="https://www.youtube.com/watch?v=..."/>
+    </div>
+    <div style="flex:0 0 110px;">
+      <label>Timeout (s)</label>
+      <input id="test-timeout" type="number" min="10" max="600" step="5" style="width:100%; margin:4px 0;"/>
+    </div>
+  </div>
+  <p style="display:flex; gap:8px; align-items:center;">
+    <button class="primary" id="run-test">Run test</button>
+    <button id="test-reset-url">Reset URL to default</button>
+    <span class="status" id="test-status"></span>
+  </p>
+  <pre class="mono scrollable" id="test-output" style="height:220px; max-height:220px; display:none;"></pre>
+</div>
+</section>
+
+<section class="tab-page" id="page-logs">
 <div class="card">
   <label>Services</label>
   <table>
@@ -82,7 +133,7 @@ textarea { background:#121a26; color:var(--fg); border:1px solid #33455b; border
     <select id="log-src" style="padding:4px 8px; background:#121a26; color:var(--fg); border:1px solid #33455b;">
       <option selected>all</option><option>actions</option>
       <option>nfqws</option><option>ss-server</option><option>sockd</option>
-      <option>redsocks</option><option>ss-local</option><option>udprelay</option><option>panel</option>
+      <option>redsocks</option><option>ss-local</option><option>udprelay</option><option>panel</option><option>test</option>
     </select>
     <button id="export-log">export all logs (.log)</button>
     <button id="refresh-log">refresh</button>
@@ -90,11 +141,22 @@ textarea { background:#121a26; color:var(--fg); border:1px solid #33455b; border
   </p>
     <pre class="mono scrollable" id="log" style="height:180px; max-height:180px;"></pre>
 </div>
+</section>
 
 <div id="toast"></div>
 <script>
 const $ = (q) => document.querySelector(q);
 let strategyList = [];
+
+// --- tab navigation -------------------------------------------------------
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('section.tab-page').forEach(p => {
+    p.style.display = p.id === 'page-' + name ? 'block' : 'none';
+  });
+}
+document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
+showTab('status');
 
 function toast(msg, isErr) {
   const t = $('#toast');
@@ -212,6 +274,7 @@ async function loadStrategies() {
     '<option value="' + x.id + '"' + (x.id === cur ? ' selected' : '') + '>' +
     x.id + ' &mdash; ' + x.name + '</option>').join('');
   updateStrategyDesc();
+  syncTestStrategySelect();
 }
 
 function updateStrategyDesc() {
@@ -277,6 +340,69 @@ $('#import-strategy').addEventListener('click', async () => {
   }
 });
 
+// --- Strategy testing (isolated test nfqws + yt-dlp) ----------------------
+let testInfo = { test_url: '', test_timeout: 120, test_queue: 202, yt_dlp_available: true };
+
+function syncTestStrategySelect() {
+  const cur = $('#test-strategy').value;
+  $('#test-strategy').innerHTML = strategyList.map(x =>
+    '<option value="' + x.id + '">' + x.id + ' &mdash; ' + x.name + '</option>').join('');
+  if (cur && strategyList.some(x => x.id === cur)) { $('#test-strategy').value = cur; }
+}
+
+async function loadTestInfo() {
+  try {
+    testInfo = await api('/api/testinfo');
+    if (!$('#test-url').value) { $('#test-url').value = testInfo.test_url || ''; }
+    if (!$('#test-timeout').value) { $('#test-timeout').value = testInfo.test_timeout || 120; }
+    $('#test-status').textContent = testInfo.yt_dlp_available
+      ? 'yt-dlp ready &middot; isolated test queue #' + testInfo.test_queue
+      : 'WARNING: yt-dlp is not installed in the container';
+  } catch (e) {
+    toast('test info fetch failed: ' + e, true);
+  }
+}
+
+$('#run-test').addEventListener('click', async () => {
+  const btn = $('#run-test');
+  const id = $('#test-strategy').value;
+  const url = $('#test-url').value.trim();
+  const timeout = Math.max(10, Math.min(600, parseInt($('#test-timeout').value, 10) || testInfo.test_timeout || 120));
+  if (!url) { toast('enter a test URL', true); return; }
+  if (!/^https?:\/\//.test(url)) { toast('test URL must start with http:// or https://', true); return; }
+  btn.disabled = true;
+  $('#test-output').style.display = 'block';
+  $('#test-output').textContent = 'testing strategy "' + id + '" via a SEPARATE test nfqws ...\n'
+    + 'yt-dlp probe: ' + url + '\n(timeout ' + timeout + 's — video file is deleted when the test finishes)\n';
+  $('#test-status').textContent = 'running ...';
+  $('#test-status').style.color = 'var(--mut)';
+  try {
+    const res = await api('/api/strategy/test',
+      { method: 'POST', body: JSON.stringify({ id, url, timeout }) });
+    if (!res.ok) { throw new Error(res.error || 'test harness failed'); }
+    const verdict = res.success ? 'PASS' : 'FAIL';
+    $('#test-status').innerHTML = '<b style="color:' + (res.success ? 'var(--ok)' : 'var(--bad)') + '">' + verdict + '</b>'
+      + ' &middot; ' + res.strategy + ' &middot; ' + (res.took_s || '?') + 's'
+      + (res.bytes ? ' &middot; ' + formatBytes(res.bytes) : '')
+      + ' &middot; ' + esc(res.reason || '');
+    $('#test-output').textContent = '# ' + res.reason + ' (yt-dlp rc=' + res.rc + ')'
+      + (res.files && res.files.length ? '\n# downloaded: ' + res.files.join(', ') + ' — deleted' : '')
+      + '\n\n' + (res.log || '');
+    if (res.success) { toast('strategy "' + id + '" PASSED the test'); }
+    else { toast('strategy "' + id + '" FAILED the test', true); }
+  } catch (e) {
+    $('#test-status').textContent = 'test error: ' + e.message;
+    $('#test-status').style.color = 'var(--bad)';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('#test-reset-url').addEventListener('click', () => {
+  $('#test-url').value = testInfo.test_url || '';
+  toast('URL reset to default');
+});
+
 async function loadLog() {
   const src = $('#log-src').value;
   const r = await api('/api/logs?src=' + encodeURIComponent(src) + '&n=300');
@@ -308,6 +434,7 @@ setInterval(loadLog, 5000);
 
 loadStatus();
 loadStrategies();
+loadTestInfo();
 loadLog();
 </script>
 </body>

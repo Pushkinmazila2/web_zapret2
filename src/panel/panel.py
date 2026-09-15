@@ -8,6 +8,12 @@ Endpoints
     GET  /api/strategy              current strategy
     POST /api/strategy {"id": ...}  switch strategy -> restart nfqws
     POST /api/strategy/import       import custom strategy from JSON
+POST /api/strategy/test {"id","url","timeout"}
+                                    test a strategy on an ISOLATED test nfqws
+                                    process with a yt-dlp probe (live nfqws is
+                                    never touched; the video file is deleted
+                                    when the test finishes)
+    GET  /api/testinfo              Test tab defaults (URL, timeout, queue, yt-dlp)
     GET  /api/exit                  current exit mode
     POST /api/exit {"mode": ...}    switch exit mode -> reload fw + restart
     GET  /api/logs?src=<svc>&n=<N>  tail a service log
@@ -43,6 +49,23 @@ HTTPD_HOST = os.environ.get("PANEL_BIND", "0.0.0.0")
 HTTPD_PORT = int(os.environ.get("PANEL_PORT", "8080"))
 AUTH_USER = os.environ.get("PANEL_USER", "")
 AUTH_PASS = os.environ.get("PANEL_PASSWORD", "")
+
+# --- strategy testing (Test tab): isolated nfqws + yt-dlp probe --------------
+WZ_TEST = "/opt/webzapret/scripts/wz-test.sh"
+TEST_YTDLP_BIN = os.environ.get("TEST_YTDLP_BIN", "/opt/webzapret/bin/yt-dlp")
+TEST_YTDLP_URL = os.environ.get(
+    "TEST_YTDLP_URL",
+    "https://www.youtube.com/watch?v=kJQP7kiw5Fk"
+    "&list=RDkJQP7kiw5Fk&start_radio=1&pp=ygUKZGVzcGFjaXRvIKAHAQ%3D%3D")
+try:
+    TEST_YTDLP_TIMEOUT = int(os.environ.get("TEST_YTDLP_TIMEOUT", "120") or 120)
+except ValueError:
+    TEST_YTDLP_TIMEOUT = 120
+try:
+    TEST_QUEUE = int(os.environ.get("QNUM_TEST", "202") or 202)
+except ValueError:
+    TEST_QUEUE = 202
+_TEST_URL_RE = re.compile(r"^https?://[^\s]+$", re.IGNORECASE)
 
 # --- access layer endpoints (used to build client connection strings) --------
 SS_LISTEN_PORT = int(os.environ.get("SS_LISTEN_PORT", "8388") or 8388)
@@ -140,7 +163,7 @@ def apply(args):
 
 
 _TS_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]")
-LOG_MODULES = ["actions", "ss-server", "sockd", "nfqws", "redsocks", "ss-local", "udprelay", "panel"]
+LOG_MODULES = ["actions", "ss-server", "sockd", "nfqws", "redsocks", "ss-local", "udprelay", "panel", "test"]
 
 
 def _read_file_lines(path, max_bytes=256 * 1024):
@@ -568,6 +591,42 @@ def import_strategy_from_json(data):
         return {"ok": False, "error": str(e)}
 
 
+def test_strategy(strategy_id, url="", timeout=None):
+    """Test a strategy on an ISOLATED nfqws process via wz-test.sh.
+
+    The harness runs a separate test nfqws (its own NFQUEUE queue) and a
+    yt-dlp probe of a real URL as the dedicated 'testuser' uid, so the live
+    nfqws and the active gateway strategy are never touched. The downloaded
+    video file is deleted by the harness after the run.
+    """
+    if strategy_id not in strategy_ids():
+        return {"ok": False, "error": "unknown strategy '%s'" % strategy_id}
+    url = (url or TEST_YTDLP_URL).strip()
+    if not url or len(url) > 2048 or not _TEST_URL_RE.match(url):
+        return {"ok": False, "error": "test URL must be a single http(s) URL"}
+    try:
+        timeout = max(10, min(int(timeout or TEST_YTDLP_TIMEOUT), 600))
+    except (TypeError, ValueError):
+        timeout = TEST_YTDLP_TIMEOUT
+    print("panel: strategy test: id=%s url=%s timeout=%ss"
+          % (strategy_id, url, timeout), flush=True)
+    try:
+        r = subprocess.run(
+            [WZ_TEST, strategy_id, url, str(timeout)],
+            capture_output=True, text=True, timeout=timeout + 60,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "test harness timed out"}
+    try:
+        res = json.loads(r.stdout or "{}")
+    except ValueError:
+        res = {}
+    if not isinstance(res, dict) or "ok" not in res:
+        res = {"ok": False, "error": ("malformed test harness output (rc=%d): %s"
+                                      % (r.returncode, (r.stdout or r.stderr or "")[-800:]))}
+    return res
+
+
 def status():
     strat = active_strategy()
     entry = {}
@@ -681,6 +740,13 @@ class Handler(BaseHTTPRequestHandler):
                      "desc": s.get("desc", ""), "imported": s.get("imported", False)} for s in strategies()
                 ]
             })
+        if path == "/api/testinfo":
+            return self._send(200, {
+                "test_url": TEST_YTDLP_URL,
+                "test_timeout": TEST_YTDLP_TIMEOUT,
+                "test_queue": TEST_QUEUE,
+                "yt_dlp_available": os.path.exists(TEST_YTDLP_BIN),
+            })
         if path == "/api/strategy":
             return self._send(200, {"id": active_strategy()})
         if path == "/api/exit":
@@ -724,6 +790,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/strategy/import":
             body = self._read_body()
             res = import_strategy_from_json(body)
+            return self._send(200 if res.get("ok") else 400, res)
+        if path == "/api/strategy/test":
+            body = self._read_body()
+            res = test_strategy(
+                str(body.get("id", "")),
+                str(body.get("url", "") or TEST_YTDLP_URL),
+                body.get("timeout"),
+            )
             return self._send(200 if res.get("ok") else 400, res)
         if path == "/api/exit":
             body = self._read_body()

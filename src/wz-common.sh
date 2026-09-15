@@ -41,10 +41,21 @@ IP=/usr/sbin/ip
 : "${DESYNC_MARK:=0x40000000}"
 : "${QNUM_TCP:=200}"
 : "${QNUM_UDP:=201}"
+: "${QNUM_TEST:=202}"          # NFQUEUE queue bound by the ISOLATED test nfqws
 : "${NFQ_TCP_PORTS:=80,443}"
 : "${NFQ_UDP_PORTS:=443}"
 : "${NFQWS_TCP_PKT_OUT:=9}"
 : "${NFQWS_UDP_PKT_OUT:=9}"
+
+# strategy testing (panel Test tab / API): probe a real URL with yt-dlp through
+# a SEPARATE test nfqws process — the active strategy on the live queue is never
+# touched and real clients keep their service. The video yt-dlp downloads is
+# always deleted when the test ends.
+: "${TEST_YTDLP_BIN:=/opt/webzapret/bin/yt-dlp}"
+: "${TEST_YTDLP_URL:=https://www.youtube.com/watch?v=kJQP7kiw5Fk&list=RDkJQP7kiw5Fk&start_radio=1&pp=ygUKZGVzcGFjaXRvIKAHAQ%3D%3D}"
+: "${TEST_YTDLP_TIMEOUT:=120}"
+: "${TEST_YTDLP_FORMAT:=worst/b}"
+: "${TEST_YTDLP_MAX_FILESIZE:=80M}"
 : "${REDSOCKS_PORT:=1060}"
 : "${SS_LOCAL_PORT:=1090}"
 : "${UDP_MARK:=0x1}"

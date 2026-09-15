@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: build up prod down logs shell panel smoke status strategy exit psql clean
+.PHONY: build up prod down logs shell panel smoke status strategy exit test psql clean
 
 build:
 	docker compose build
@@ -41,6 +41,14 @@ exit:
 	@test -n "$(M)" || exit 1
 	curl -fsS -X POST http://127.0.0.1:$${PANEL_PORT:-8080}/api/exit \
 	  -H 'Content-Type: application/json' -d '{"mode":"$(M)"}'
+
+# strategy test on an ISOLATED test nfqws process (yt-dlp probe; the live
+# nfqws and active strategy are never touched). URL overrides TEST_YTDLP_URL.
+test:
+	@echo "usage: make test S=<strategy-id> [URL=<yt-dlp-url>]"
+	@test -n "$(S)" || exit 1
+	curl -fsS --max-time 420 -X POST http://127.0.0.1:$${PANEL_PORT:-8080}/api/strategy/test \
+	  -H 'Content-Type: application/json' -d '{"id":"$(S)","url":"$(URL)"}'
 
 clean:
 	docker compose down -v --remove-orphans

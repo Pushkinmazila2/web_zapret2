@@ -51,7 +51,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         util-linux tzdata libcap2-bin \
         # nfqws runtime deps (nfqws links -lmnl, -lz, -lnetfilter_queue, -lnfnetlink)
         libnetfilter-queue1 libnfnetlink0 libpcap0.8 libmnl0 zlib1g \
-        python3 libluajit-5.1-2 \
+        python3 python3-pip libluajit-5.1-2 \
     && rm -rf /var/lib/apt/lists/* \
     # fail the build with a clear diagnostic if dante is missing/incomplete
     # (bookworm ships the binary as /usr/sbin/danted, older as sockd)
@@ -60,8 +60,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
              dpkg -L dante-server; exit 1; }; } \
     && (id -u proxy >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin proxy) \
     && (id -u exituser >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin exituser) \
+    && (id -u testuser >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin testuser) \
     && mkdir -p /opt/webzapret/bin /var/log/webzapret /run/webzapret \
     && chown -R proxy:proxy /var/log/webzapret /run/webzapret
+
+# yt-dlp — the probe tool for the strategy Test tab (pinned release for
+# reproducibility; runs as the dedicated 'testuser' uid during a test).
+RUN python3 -m pip install --break-system-packages --no-cache-dir --no-input "yt-dlp==2026.08.19" \
+    && rm -rf /root/.cache/pip
 
 # zapret2 binaries (nfqws, tpws, ipset, mdig)
 COPY --from=zapret-builder /build/zapret/binaries/my/ /opt/webzapret/bin/
@@ -70,7 +76,7 @@ COPY --from=zapret-builder /build/zapret/lua/ /opt/webzapret/lua/
 COPY --from=relay-builder /build/wz-udprelay /opt/webzapret/bin/wz-udprelay
 # config templates + scripts + panel
 COPY config/ /opt/webzapret/config/
-COPY src/entrypoint.sh src/wz-common.sh src/wz-fw.sh src/wz-svc.sh src/wz-apply.sh \
+COPY src/entrypoint.sh src/wz-common.sh src/wz-fw.sh src/wz-svc.sh src/wz-apply.sh src/wz-test.sh \
      /opt/webzapret/scripts/
 COPY src/panel/ /opt/webzapret/panel/
 COPY src/strategy.py /opt/webzapret/scripts/strategy.py
@@ -78,6 +84,7 @@ COPY tests/ /opt/webzapret/tests/
 
 # narrow-capability helper: relay needs NET_ADMIN only at TUN setup
 RUN setcap cap_net_admin,cap_net_raw+ep /opt/webzapret/bin/wz-udprelay 2>/dev/null || true \
+ && ln -sf /usr/local/bin/yt-dlp /opt/webzapret/bin/yt-dlp \
  && chmod +x /opt/webzapret/scripts/*.sh /opt/webzapret/panel/panel.py \
  && ln -sf /opt/webzapret/scripts/*.sh /usr/local/sbin/ \
  && mkdir -p /opt/webzapret/state

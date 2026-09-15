@@ -43,6 +43,10 @@ single-file **HTML panel** swaps the zapret **strategy** and restarts nfqws.
 - **Panel** (`http://<host>:8080`): strategy picker (apply = write state +
   **restart nfqws**), exit-mode radio, service status, live logs, one-click
   connection-log export (all modules, single file), optional Basic auth.
+- **Strategy testing** (`Test` tab): verify any strategy against a real URL
+  (YouTube by default) with **yt-dlp** through a **separate test nfqws**
+  process on its own NFQUEUE queue — the live nfqws and the active strategy
+  are never touched. The downloaded video file is deleted after the test.
 
 ## Requirements (Docker host)
 
@@ -82,6 +86,10 @@ Everything lives in `.env` (see `.env.example`). Important variables:
 | `UDP_PROXY` | `relay` | `relay` = UDP via upstream, `direct` = UDP exits directly |
 | `NFQ_TCP_PORTS`, `NFQ_UDP_PORTS` | `80,443`, `443` | which dest ports nfqws processes |
 | `NFQWS_TCP_PKT_OUT`, `NFQWS_UDP_PKT_OUT` | `9`, `9` | desync only first N packets/flow |
+| `TEST_YTDLP_URL` | Despacito clip | video URL probed by the Test tab (yt-dlp) |
+| `TEST_YTDLP_TIMEOUT` | `120` | wall-clock budget for one probe, seconds (10-600) |
+| `TEST_YTDLP_FORMAT` | `worst/b` | smallest yt-dlp format that is probed first |
+| `TEST_YTDLP_MAX_FILESIZE` | `80M` | abort probes that would exceed this size |
 | `PANEL_USER`/`PANEL_PASSWORD` | empty | panel Basic auth (set it when exposing publicly) |
 | `SS_PASSWORD`, `SS_METHOD`, `SOCKS5_LISTEN_PORT`, ... | — | access layer |
 | `UPSTREAM_SOCKS5_*`, `UPSTREAM_SS_*` | — | upstream proxy (for upstream modes) |
@@ -109,6 +117,43 @@ shows up as pages/images/videos that never load while the rest of the internet
 works. `no_reasm` makes nfqws desync the first ClientHello segment immediately
 and pass the rest of the segments through. The bundled YouTube strategies and
 all strategies imported through the panel are flagged this way automatically.
+
+### Strategy testing (Test tab / API)
+
+Every strategy can be verified against a real site **without touching the
+running gateway**. The `Test` tab (or `POST /api/strategy/test`) runs the
+strategy on a **separate nfqws2 process** that listens on its own NFQUEUE
+queue (`QNUM_TEST`, 202 by default):
+
+1. `wz-test.sh` renders the strategy with `src/strategy.py` and launches an
+   isolated `nfqws2 --qnum=202` (dedicated pidfile/logs, never the live one).
+2. A temporary `WZTEST` iptables chain is inserted at the **top** of
+   `mangle/OUTPUT` (above the live `WZFW` jump). It diverts **only** the
+   dedicated `testuser` uid's TCP/HTTP(S) and UDP(443) traffic to the test
+   queue and returns nfqws re-injected (DESYNC_MARK) packets, so the live
+   queue is bypassed for the whole probe.
+3. `yt-dlp` runs as `testuser` against the configured URL
+   (`TEST_YTDLP_URL`; the Despacito clip by default — can be overridden per
+   request from the tab or API), downloading the smallest available format
+   with a hard wall-clock timeout (`TEST_YTDLP_TIMEOUT`).
+4. The result is PASS/FAIL (yt-dlp rc + bytes on disk), the probe log tail is
+   returned, and then everything is cleaned up: the **downloaded video file
+   is deleted**, the `WZTEST` rules are removed, and the test nfqws stops.
+   The live nfqws/active strategy is untouched for the entire test.
+
+Run a test from the CLI:
+
+```bash
+make test S=custom_youtubecom_20260824          # default TEST_YTDLP_URL
+make test S=custom_youtubecom_20260824 URL="https://example.com/video"
+curl -u "$PANEL_USER:$PANEL_PASSWORD" -X POST http://127.0.0.1:8080/api/strategy/test \
+     -H 'Content-Type: application/json' \
+     -d '{"id":"standard","url":"https://www.youtube.com/watch?v=kJQP7kiw5Fk","timeout":120}'
+```
+
+The strategy id `none` runs the probe **without** any desync — a useful
+baseline (if `none` fails too, the problem is the network, not the strategy).
+
 ### Lua scripts
 
 The image includes `zapret-lib.lua`, `zapret-antidpi.lua`, and
@@ -183,6 +228,7 @@ container" — nothing from the host, nothing from other container processes.
 make status           # curl /api/status
 make strategy S=fake  # switch strategy via API
 make exit M=socks5    # switch exit mode via API
+make test S=standard  # test a strategy on an isolated nfqws + yt-dlp probe
 make panel            # validate panel/state inside the container
 make shell            # bash inside the container
 ```
