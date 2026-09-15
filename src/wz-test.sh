@@ -35,10 +35,18 @@ TEST_UID=$(id -u testuser 2>/dev/null || echo 2003)
 
 mkdir -p "$WZ_RUN" "$WZ_LOG"
 
+# ---------------------------------------------------------------------------
+# stdout hygiene — the FINAL JSON must be the ONLY thing on real stdout.
+# log_module() (sourced from wz-common.sh) echoes every line to stdout, so all
+# harness chatter is diverted to a dedicated log; fd3 keeps the real stdout for
+# the JSON emitted by emit_err/emit_result.
+# ---------------------------------------------------------------------------
+exec 3>&1
+
 emit_err()
 {
-    # prints {"ok": false, "error": ...} and exits 1
-    python3 -c 'import json,sys; print(json.dumps({"ok": False, "error": sys.argv[1]}, ensure_ascii=False))' "$1"
+    # prints {"ok": false, "error": ...} to the REAL stdout (fd3) and exits 1
+    python3 -c 'import json,sys; print(json.dumps({"ok": False, "error": sys.argv[1]}, ensure_ascii=False))' "$1" 1>&3
     exit 1
 }
 
@@ -73,6 +81,10 @@ case "$URL" in
     *) emit_err "test URL must start with http:// or https://" ;;
 esac
 valid_strategy_id "$SID" || emit_err "unknown strategy '$SID'"
+
+# divert ALL ordinary output (log_module echoes, diagnostics) to the harness
+# log so that the real stdout carries ONLY the final JSON (fd3)
+exec 1>>"$WZ_LOG/test-harness.log" 2>&1
 
 STARTED=$(date -u +%FT%TZ)
 
@@ -132,7 +144,7 @@ setup_test_nfqws()
         "--lua-init=@$WZ_SRC/lua/zapret-lib.lua" \
         "--lua-init=@$WZ_SRC/lua/zapret-antidpi.lua" \
         "--lua-init=@$WZ_SRC/lua/zapret-auto.lua" \
-        "${args[@]}" 9>&- >>"$TEST_NFQ_LOG" 2>&1 &
+        "${args[@]}" 9>&- 3>&- >>"$TEST_NFQ_LOG" 2>&1 &
     local p=$!
     echo "$p" > "$TEST_PIDFILE"
     sleep 0.6
@@ -194,7 +206,7 @@ run_ytdlp()
             --max-filesize "$TEST_YTDLP_MAX_FILESIZE" \
             --output "$out/%(id)s.%(ext)s" \
             --paths "$out" \
-            "$URL" >>"$TEST_LOG" 2>&1
+            "$URL" 3>&- >>"$TEST_LOG" 2>&1
         rc=$?
         # a real timeout is final — do not burn the remaining budget on retries
         [ "$rc" = 124 ] && break
@@ -280,7 +292,7 @@ out = {
 }
 print(json.dumps(out, ensure_ascii=True))
 ' "$SID" "$URL" "$TIMEOUT" "$STARTED" "$finished" "$success" "$reason" "$rc" \
-    "$TEST_BYTES" "$TEST_FILES_CSV" "$logtail_file"
+    "$TEST_BYTES" "$TEST_FILES_CSV" "$logtail_file" 1>&3
 }
 
 # ---------------------------------------------------------------------------

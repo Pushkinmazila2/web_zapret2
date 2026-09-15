@@ -156,6 +156,12 @@ curl -u "$PANEL_USER:$PANEL_PASSWORD" -X POST http://127.0.0.1:8080/api/strategy
 The strategy id `none` runs the probe **without** any desync — a useful
 baseline (if `none` fails too, the problem is the network, not the strategy).
 
+Imported/custom strategies can be removed from the catalog with
+`POST /api/strategy/delete {"id": ...}` or the **Delete a strategy** block on
+the Strategy tab; the built-in `none` and the currently **active** strategy
+are protected (switch away first). Deleting a strategy only removes it from
+`config/strategies.json` — it never restarts or touches the running nfqws.
+
 ### Lua scripts
 
 The image includes `zapret-lib.lua`, `zapret-antidpi.lua`, and

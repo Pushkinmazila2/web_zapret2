@@ -68,6 +68,14 @@ button[disabled] { opacity:.55; cursor:default; }
   <div id="exit-mode"></div>
   <p class="status" id="exit-hint"></p>
 </div>
+
+<div class="card">
+  <label>Services</label>
+  <table>
+    <thead><tr><th>service</th><th>status</th><th>pid</th></tr></thead>
+    <tbody id="services"></tbody>
+  </table>
+</div>
 </section>
 
 <section class="tab-page" id="page-strategy">
@@ -82,6 +90,14 @@ button[disabled] { opacity:.55; cursor:default; }
     <p class="status">Paste JSON from zapret2 test results (domain-based strategies)</p>
     <textarea id="import-json" rows="6" placeholder='{"domain":"example.com","strategies":[...]}'></textarea>
     <button id="import-strategy" style="margin-top:8px;">Import strategy</button>
+  </div>
+
+  <div style="margin-top:16px; padding-top:16px; border-top:1px solid #26303e;">
+    <label>Delete a strategy</label>
+    <p class="status">Removes an imported/custom strategy from the catalog.
+      The built-in <b>none</b> and the currently <b>active</b> strategy cannot be deleted.</p>
+    <select id="delete-strategy" style="margin:6px 0 0; padding:7px 10px; background:#121a26; color:var(--fg); border:1px solid #33455b;"></select>
+    <button id="delete-strategy-btn" style="margin-top:8px;">Delete selected strategy</button>
   </div>
 </div>
 </section>
@@ -118,14 +134,6 @@ button[disabled] { opacity:.55; cursor:default; }
 </section>
 
 <section class="tab-page" id="page-logs">
-<div class="card">
-  <label>Services</label>
-  <table>
-    <thead><tr><th>service</th><th>status</th><th>pid</th></tr></thead>
-    <tbody id="services"></tbody>
-  </table>
-</div>
-
 <div class="card">
   <label>Logs</label>
   <p style="display:flex; gap:8px; align-items:center;">
@@ -275,6 +283,7 @@ async function loadStrategies() {
     x.id + ' &mdash; ' + x.name + '</option>').join('');
   updateStrategyDesc();
   syncTestStrategySelect();
+  syncDeleteStrategySelect();
 }
 
 function updateStrategyDesc() {
@@ -350,6 +359,14 @@ function syncTestStrategySelect() {
   if (cur && strategyList.some(x => x.id === cur)) { $('#test-strategy').value = cur; }
 }
 
+function syncDeleteStrategySelect() {
+  const cur = $('#delete-strategy').value;
+  const selectable = strategyList.filter(x => x.id !== 'none');
+  $('#delete-strategy').innerHTML = selectable.map(x =>
+    '<option value="' + x.id + '">' + x.id + ' &mdash; ' + x.name + '</option>').join('');
+  if (cur && selectable.some(x => x.id === cur)) { $('#delete-strategy').value = cur; }
+}
+
 async function loadTestInfo() {
   try {
     testInfo = await api('/api/testinfo');
@@ -402,6 +419,30 @@ $('#test-reset-url').addEventListener('click', () => {
   $('#test-url').value = testInfo.test_url || '';
   toast('URL reset to default');
 });
+
+// --- Delete a strategy from the catalog ------------------------------------
+$('#delete-strategy-btn').addEventListener('click', async () => {
+  const id = $('#delete-strategy').value;
+  if (!id) { toast('select a strategy to delete', true); return; }
+  if (!confirm('Delete strategy "' + id + '" from the catalog?')) { return; }
+  const btn = $('#delete-strategy-btn');
+  btn.disabled = true;
+  try {
+    const res = await api('/api/strategy/delete',
+      { method: 'POST', body: JSON.stringify({ id }) });
+    if (res.ok) {
+      toast('deleted strategy: ' + id);
+      await loadStrategies();
+    } else {
+      toast('delete failed: ' + (res.error || 'unknown error'), true);
+    }
+  } catch (e) {
+    toast('delete failed: ' + e, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 
 async function loadLog() {
   const src = $('#log-src').value;

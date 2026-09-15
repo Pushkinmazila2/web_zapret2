@@ -116,6 +116,100 @@ class PanelStrategyTestTests(unittest.TestCase):
         self.assertFalse(res.get("ok"))
         self.assertIn("timed out", res.get("error", ""))
 
+    def test_leading_noise_is_tolerated(self):
+        """log_module() lines that once leaked into harness stdout (before AND
+        after the JSON) must not break the result — the panel raw_decodes the
+        first JSON object, so a SUCCESSFUL download is never reported as
+        'malformed output'."""
+        real_run = panel.subprocess.run
+        payload = ('[2026-09-15T13:26:30Z] [test] starting isolated nfqws (queue 202)\n'
+                   '[2026-09-15T13:26:31Z] [test] test nfqws started (pid 197)\n'
+                   '[2026-09-15T13:26:32Z] [test] yt-dlp attempt: format=\'bv*[height<=360]+ba/b/worst\'\n'
+                   + json.dumps({"ok": True, "success": True, "strategy": "standard",
+                                 "rc": 0, "reason": "download completed (12577365 bytes)",
+                                 "bytes": 12577365, "files": ["pfsRxTjNGvo.f396.mp4"],
+                                 "log": "[youtube] Extracting URL: ..."}))
+        noise = ('[2026-09-15T13:26:32Z] [test] yt-dlp finished rc=0\n'
+                 '[2026-09-15T13:26:33Z] [test] stopping test nfqws (pid 197)\n')
+
+        def fake_run(cmd, **kw):
+            class R:
+                returncode = 0
+                stdout = payload + noise
+                stderr = ""
+            return R()
+        panel.subprocess.run = fake_run
+        self.addCleanup(lambda: setattr(panel.subprocess, "run", real_run))
+        res = panel.test_strategy("standard", "https://example.com/v")
+        self.assertTrue(res.get("ok"), res)
+        self.assertTrue(res.get("success"), res)
+        self.assertEqual(res.get("bytes"), 12577365)
+
+
+class PanelStrategyDeleteTests(unittest.TestCase):
+    """POST /api/strategy/delete: removes a strategy from the catalog.
+    The built-in 'none' and the currently ACTIVE strategy are protected."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="wz-panel-del-")
+        self.strategies_file = str(Path(self.tmp) / "strategies.json")
+        self.state_dir = str(Path(self.tmp) / "state")
+        Path(self.state_dir).mkdir()
+        panel.STRATEGIES_FILE = self.strategies_file
+        panel.WZ_STATE = self.state_dir
+        self._write_catalog([
+            {"id": "standard", "name": "Standard", "nfqws_opt": "--dpi-desync=fake"},
+            {"id": "custom_x", "name": "Custom x",
+             "lua_opt": "--payload=tls_client_hello --lua-desync=fake"},
+            {"id": "custom_y", "name": "Custom y",
+             "lua_opt": "--payload=tls_client_hello --lua-desync=multisplit:pos=2"},
+            {"id": "none", "name": "Disabled", "nfqws_opt": ""},
+        ])
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_catalog(self, strategies):
+        Path(self.strategies_file).write_text(
+            json.dumps({"strategies": strategies}), encoding="utf-8")
+
+    def _catalog_ids(self):
+        data = json.loads(Path(self.strategies_file).read_text(encoding="utf-8"))
+        return [s["id"] for s in data["strategies"]]
+
+    def test_delete_unknown_rejected(self):
+        res = panel.delete_strategy("does_not_exist")
+        self.assertFalse(res.get("ok"))
+        self.assertIn("unknown strategy", res.get("error", ""))
+
+    def test_delete_none_rejected(self):
+        res = panel.delete_strategy("none")
+        self.assertFalse(res.get("ok"))
+        self.assertIn("'none'", res.get("error", ""))
+        self.assertIn("none", self._catalog_ids())
+
+    def test_delete_active_rejected(self):
+        (Path(self.state_dir) / "strategy").write_text("custom_x\n", encoding="utf-8")
+        self.assertEqual(panel.active_strategy(), "custom_x")
+        res = panel.delete_strategy("custom_x")
+        self.assertFalse(res.get("ok"))
+        self.assertIn("ACTIVE", res.get("error", ""))
+        self.assertIn("custom_x", self._catalog_ids())
+
+    def test_delete_success(self):
+        res = panel.delete_strategy("custom_x")
+        self.assertTrue(res.get("ok"), res)
+        self.assertEqual(res.get("id"), "custom_x")
+        self.assertEqual(res.get("strategies"), ["standard", "custom_y", "none"])
+        self.assertNotIn("custom_x", self._catalog_ids())
+
+    def test_delete_is_idempotent_after_removal(self):
+        panel.delete_strategy("custom_x")
+        res = panel.delete_strategy("custom_x")
+        self.assertFalse(res.get("ok"))
+        self.assertIn("unknown strategy", res.get("error", ""))
+
 
 if __name__ == "__main__":
     unittest.main()

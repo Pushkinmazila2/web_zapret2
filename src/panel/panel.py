@@ -8,11 +8,12 @@ Endpoints
     GET  /api/strategy              current strategy
     POST /api/strategy {"id": ...}  switch strategy -> restart nfqws
     POST /api/strategy/import       import custom strategy from JSON
-POST /api/strategy/test {"id","url","timeout"}
+    POST /api/strategy/test {"id","url","timeout"}
                                     test a strategy on an ISOLATED test nfqws
                                     process with a yt-dlp probe (live nfqws is
                                     never touched; the video file is deleted
                                     when the test finishes)
+    POST /api/strategy/delete {"id"}  remove a strategy from the catalog
     GET  /api/testinfo              Test tab defaults (URL, timeout, queue, yt-dlp)
     GET  /api/exit                  current exit mode
     POST /api/exit {"mode": ...}    switch exit mode -> reload fw + restart
@@ -617,14 +618,39 @@ def test_strategy(strategy_id, url="", timeout=None):
         )
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "test harness timed out"}
-    try:
-        res = json.loads(r.stdout or "{}")
-    except ValueError:
-        res = {}
+    raw = r.stdout or ""
+    res = {}
+    # tolerate ANY stray output around the JSON (leading log lines, trailing
+    # noise): raw_decode parses the first JSON value and ignores the rest, so
+    # a successful download is never reported as 'malformed harness output'
+    start = raw.find("{")
+    if start >= 0:
+        try:
+            res, _ = json.JSONDecoder().raw_decode(raw[start:])
+        except ValueError:
+            res = {}
     if not isinstance(res, dict) or "ok" not in res:
         res = {"ok": False, "error": ("malformed test harness output (rc=%d): %s"
-                                      % (r.returncode, (r.stdout or r.stderr or "")[-800:]))}
+                                      % (r.returncode, (raw or r.stderr or "")[-800:]))}
     return res
+
+
+def delete_strategy(strategy_id):
+    """Remove a strategy from config/strategies.json (idempotent)."""
+    sid = str(strategy_id or "")
+    if sid not in strategy_ids():
+        return {"ok": False, "error": "unknown strategy '%s'" % sid}
+    if sid == "none":
+        return {"ok": False, "error": "the built-in 'none' strategy cannot be deleted"}
+    if sid == active_strategy():
+        return {"ok": False, "error": "cannot delete the ACTIVE strategy — switch to another one first"}
+    strat = read_json(STRATEGIES_FILE, {"strategies": []}) or {"strategies": []}
+    strat["strategies"] = [s for s in strat.get("strategies", []) if s.get("id") != sid]
+    if not write_json(STRATEGIES_FILE, strat):
+        return {"ok": False, "error": "failed to write strategies file"}
+    print("panel: strategy deleted: %s" % sid, flush=True)
+    return {"ok": True, "id": sid,
+            "strategies": [s.get("id") for s in strat.get("strategies", [])]}
 
 
 def status():
@@ -798,6 +824,10 @@ class Handler(BaseHTTPRequestHandler):
                 str(body.get("url", "") or TEST_YTDLP_URL),
                 body.get("timeout"),
             )
+            return self._send(200 if res.get("ok") else 400, res)
+        if path == "/api/strategy/delete":
+            body = self._read_body()
+            res = delete_strategy(str(body.get("id", "")))
             return self._send(200 if res.get("ok") else 400, res)
         if path == "/api/exit":
             body = self._read_body()
