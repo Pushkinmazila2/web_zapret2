@@ -1,5 +1,6 @@
 services:
   gateway:
+    container_name: web_zapret2
     build:
       context: .
       dockerfile: Dockerfile
@@ -7,9 +8,10 @@ services:
       - 77.88.8.8
       - 8.8.8.8
     image: web-zapret2:stage1
-    container_name: web-zapret2
     restart: unless-stopped
     env_file: .env
+    networks:
+      - s-ui_s-ui
     ports:
       - "${SS_LISTEN_PORT:-8388}:8388/tcp"
       - "${SS_LISTEN_PORT:-8388}:8388/udp"
@@ -42,3 +44,7 @@ services:
 
 volumes:
   wz-state:
+
+networks:
+  s-ui_s-ui:
+    external: true
