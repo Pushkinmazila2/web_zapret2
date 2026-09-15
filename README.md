@@ -88,7 +88,7 @@ Everything lives in `.env` (see `.env.example`). Important variables:
 | `NFQWS_TCP_PKT_OUT`, `NFQWS_UDP_PKT_OUT` | `9`, `9` | desync only first N packets/flow |
 | `TEST_YTDLP_URL` | Despacito clip | video URL probed by the Test tab (yt-dlp) |
 | `TEST_YTDLP_TIMEOUT` | `120` | wall-clock budget for one probe, seconds (10-600) |
-| `TEST_YTDLP_FORMAT` | `worst/b` | smallest yt-dlp format that is probed first |
+| `TEST_YTDLP_FORMAT` | `bv*[height<=360]+ba/b/worst` | probe format (auto-retries fallbacks, incl. audio-only) |
 | `TEST_YTDLP_MAX_FILESIZE` | `80M` | abort probes that would exceed this size |
 | `PANEL_USER`/`PANEL_PASSWORD` | empty | panel Basic auth (set it when exposing publicly) |
 | `SS_PASSWORD`, `SS_METHOD`, `SOCKS5_LISTEN_PORT`, ... | — | access layer |
@@ -134,8 +134,10 @@ queue (`QNUM_TEST`, 202 by default):
    queue is bypassed for the whole probe.
 3. `yt-dlp` runs as `testuser` against the configured URL
    (`TEST_YTDLP_URL`; the Despacito clip by default — can be overridden per
-   request from the tab or API), downloading the smallest available format
-   with a hard wall-clock timeout (`TEST_YTDLP_TIMEOUT`).
+   request from the tab or API). It downloads a small format — 360p
+   video+audio merged / best composite / worst single, with automatic
+   fallback attempts (incl. audio-only) — under a hard wall-clock timeout
+   (`TEST_YTDLP_TIMEOUT`).
 4. The result is PASS/FAIL (yt-dlp rc + bytes on disk), the probe log tail is
    returned, and then everything is cleaned up: the **downloaded video file
    is deleted**, the `WZTEST` rules are removed, and the test nfqws stops.

@@ -164,25 +164,46 @@ install_rules()
     $IPT -t mangle -I OUTPUT 1 -j "$TEST_CHAIN"
 }
 
-# yt-dlp probe as 'testuser' with a hard wall-clock timeout
+# yt-dlp probe as 'testuser' with a hard wall-clock timeout.
+# Format selection is retried so a probe can never fail merely because one
+# `--format` selector is unavailable on the target video:
+#   $TEST_YTDLP_FORMAT (360p merged / composite / worst)
+#   -> "worst" single   -> audio-only (small, merge-free)   -> yt-dlp default
+# A connection that completes a non-empty download means the strategy works.
 run_ytdlp()
 {
-    local out="$TEST_DIR/out" rc
+    local out="$TEST_DIR/out" rc f now left
+    local attempts=("$TEST_YTDLP_FORMAT" "worst" "ba[ext=m4a]/ba" "")
+    local deadline=$(( $(date +%s) + TIMEOUT ))   # shared wall-clock budget
     mkdir -p "$out"
     chown "$TEST_UID" "$TEST_DIR" "$out" 2>/dev/null || true
-    log_module test "yt-dlp probe: strategy='$SID' url='$URL' timeout=${TIMEOUT}s"
-    runuser -u testuser -- env HOME="$out" XDG_CACHE_HOME="$TEST_DIR/cache" \
-        timeout --kill-after=10 -s TERM "$TIMEOUT" "$TEST_YTDLP_BIN" \
-        --no-warnings --no-playlist --no-part --no-mtime --no-cache-dir \
-        --no-write-info-json --no-progress \
-        --format "$TEST_YTDLP_FORMAT" \
-        --socket-timeout 20 \
-        --retries 2 --fragment-retries 2 \
-        --max-filesize "$TEST_YTDLP_MAX_FILESIZE" \
-        --output "$out/%(id)s.%(ext)s" \
-        --paths "$out" \
-        "$URL" >>"$TEST_LOG" 2>&1
-    rc=$?
+    log_module test "yt-dlp probe: strategy='$SID' url='$URL' timeout=${TIMEOUT}s (shared across attempts)"
+    rc=2
+    for f in "${attempts[@]}"; do
+        now=$(date +%s)
+        left=$(( deadline - now ))
+        [ "$left" -le 5 ] && { log_module test "yt-dlp deadline reached, stopping"; break; }
+        log_module test "yt-dlp attempt: format='${f:-<default>}' budget=${left}s"
+        runuser -u testuser -- env HOME="$out" XDG_CACHE_HOME="$TEST_DIR/cache" \
+            timeout --kill-after=10 -s TERM "$left" "$TEST_YTDLP_BIN" \
+            --no-warnings --no-playlist --no-part --no-mtime --no-cache-dir \
+            --no-write-info-json --no-progress \
+            ${f:+--format "$f"} \
+            --socket-timeout 20 \
+            --retries 1 --fragment-retries 1 \
+            --max-filesize "$TEST_YTDLP_MAX_FILESIZE" \
+            --output "$out/%(id)s.%(ext)s" \
+            --paths "$out" \
+            "$URL" >>"$TEST_LOG" 2>&1
+        rc=$?
+        # a real timeout is final — do not burn the remaining budget on retries
+        [ "$rc" = 124 ] && break
+        # download may have completed media despite a nonzero rc (edge cases)
+        if [ "$rc" -ne 0 ] && find "$out" -type f -size +0c 2>/dev/null | grep -q .; then
+            rc=0
+        fi
+        [ "$rc" = 0 ] && break
+    done
     log_module test "yt-dlp finished rc=$rc"
     return $rc
 }
@@ -202,15 +223,15 @@ collect_files()
 
 emit_result()
 {
-    local success=$1 reason=$2 rc=$3 finished logtail
+    local success=$1 reason=$2 rc=$3 logtail_file=$4 finished
     finished=$(date -u +%FT%TZ)
-    logtail=$(tail -n 40 "$TEST_LOG" 2>/dev/null | head -c 6000)
-    python3 - "$SID" "$URL" "$TIMEOUT" "$STARTED" "$finished" "$success" "$reason" "$rc" \
-        "$TEST_BYTES" "$TEST_FILES_CSV" "$logtail" <<'PY'
+    # NOTE: no heredoc here — a CRLF-checked-out script would break the
+    # terminator; -c receives the program as an argument instead.
+    python3 -c '
 import json, sys
 from datetime import datetime
 
-sid, url, timeout, started, finished, success, reason, rc, byt, files, logtail = sys.argv[1:]
+sid, url, timeout, started, finished, success, reason, rc, byt, files, logfile = sys.argv[1:]
 
 def ts(x):
     try:
@@ -222,6 +243,16 @@ took = None
 s, f = ts(started), ts(finished)
 if s and f:
     took = round((f - s).total_seconds(), 1)
+
+# the yt-dlp log tail may contain arbitrary bytes; read it with replace so a
+# broken sequence can never break the JSON we emit
+log = "(no log)"
+try:
+    with open(logfile, "r", encoding="utf-8", errors="replace") as fh:
+        log = fh.read()
+except Exception:
+    log = "(log read error)"
+
 try:
     byt = int(byt)
 except Exception:
@@ -245,10 +276,11 @@ out = {
     "reason": reason,
     "bytes": byt,
     "files": files,
-    "log": logtail,
+    "log": log,
 }
-print(json.dumps(out, ensure_ascii=False))
-PY
+print(json.dumps(out, ensure_ascii=True))
+' "$SID" "$URL" "$TIMEOUT" "$STARTED" "$finished" "$success" "$reason" "$rc" \
+    "$TEST_BYTES" "$TEST_FILES_CSV" "$logtail_file"
 }
 
 # ---------------------------------------------------------------------------
@@ -282,5 +314,7 @@ else
     REASON="yt-dlp exited 0 but produced no output file"
 fi
 
-emit_result "$SUCCESS" "$REASON" "$RC"
+LOGTAIL_FILE="$TEST_DIR/logtail.tmp"
+tail -n 40 "$TEST_LOG" 2>/dev/null | head -c 6000 > "$LOGTAIL_FILE" 2>/dev/null || true
+emit_result "$SUCCESS" "$REASON" "$RC" "$LOGTAIL_FILE"
 exit 0

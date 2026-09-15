@@ -54,7 +54,7 @@ IP=/usr/sbin/ip
 : "${TEST_YTDLP_BIN:=/opt/webzapret/bin/yt-dlp}"
 : "${TEST_YTDLP_URL:=https://www.youtube.com/watch?v=kJQP7kiw5Fk&list=RDkJQP7kiw5Fk&start_radio=1&pp=ygUKZGVzcGFjaXRvIKAHAQ%3D%3D}"
 : "${TEST_YTDLP_TIMEOUT:=120}"
-: "${TEST_YTDLP_FORMAT:=worst/b}"
+: "${TEST_YTDLP_FORMAT:=bv*[height<=360]+ba/b/worst}"
 : "${TEST_YTDLP_MAX_FILESIZE:=80M}"
 : "${REDSOCKS_PORT:=1060}"
 : "${SS_LOCAL_PORT:=1090}"

@@ -613,7 +613,7 @@ def test_strategy(strategy_id, url="", timeout=None):
     try:
         r = subprocess.run(
             [WZ_TEST, strategy_id, url, str(timeout)],
-            capture_output=True, text=True, timeout=timeout + 60,
+            capture_output=True, text=True, timeout=timeout + 180,
         )
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "test harness timed out"}
