@@ -15,6 +15,14 @@ Endpoints
                                     when the test finishes)
     POST /api/strategy/delete {"id"}  remove a strategy from the catalog
     GET  /api/testinfo              Test tab defaults (URL, timeout, queue, yt-dlp)
+    GET  /api/bcw                   "Strategy selection" overview: settings,
+                                    schedule, availability, job and last results
+    POST /api/bcw/settings          persist parameter overrides (panel over .env)
+    POST /api/bcw/reset             drop overrides -> .env defaults again
+    POST /api/bcw/run               start a scan+check run (blockcheckw, embedded)
+    POST /api/bcw/cancel            stop the running selection
+    POST /api/bcw/import            import working strategies into the catalog
+    POST /api/bcw/schedule          configure the time-based scheduler
     GET  /api/exit                  current exit mode
     POST /api/exit {"mode": ...}    switch exit mode -> reload fw + restart
     GET  /api/logs?src=<svc>&n=<N>  tail a service log
@@ -29,10 +37,13 @@ import json
 import os
 import re
 import shlex
+import shutil
+import signal
 import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -67,6 +78,18 @@ try:
 except ValueError:
     TEST_QUEUE = 202
 _TEST_URL_RE = re.compile(r"^https?://[^\s]+$", re.IGNORECASE)
+
+# --- strategy selection ("Select" tab): blockcheckw wrapper -------------------
+# The engine (src/blockcheck.py) is stdlib-only and lives next to strategy.py;
+# it is optional at import time so a damaged image cannot take the panel down.
+WZ_BCW = "/opt/webzapret/scripts/wz-bcw.sh"
+BCW_SCRIPTS_DIR = "/opt/webzapret/scripts"
+if BCW_SCRIPTS_DIR not in sys.path and os.path.isdir(BCW_SCRIPTS_DIR):
+    sys.path.insert(0, BCW_SCRIPTS_DIR)
+try:
+    import blockcheck as bcw          # noqa: E402  (optional feature module)
+except ImportError:
+    bcw = None
 
 # --- access layer endpoints (used to build client connection strings) --------
 SS_LISTEN_PORT = int(os.environ.get("SS_LISTEN_PORT", "8388") or 8388)
@@ -164,7 +187,8 @@ def apply(args):
 
 
 _TS_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]")
-LOG_MODULES = ["actions", "ss-server", "sockd", "nfqws", "redsocks", "ss-local", "udprelay", "panel", "test"]
+LOG_MODULES = ["actions", "ss-server", "sockd", "nfqws", "redsocks", "ss-local",
+               "udprelay", "panel", "test", "bcw"]
 
 
 def _read_file_lines(path, max_bytes=256 * 1024):
@@ -653,6 +677,366 @@ def delete_strategy(strategy_id):
             "strategies": [s.get("id") for s in strat.get("strategies", [])]}
 
 
+# ---------------------------------------------------------------------------
+# "Strategy selection" (blockcheckw): strategy generation grid (scan), the
+# multithreaded SO_MARK prober, the two-axis false-positive filter (check) and
+# a time-based scheduler.  Every parameter comes from .env (BCW_*) and can be
+# overridden live from the panel (persisted in $WZ_STATE/bcw_settings.json).
+# The live gateway is never touched: blockcheckw runs in embedded mode
+# (--no-conflict-cleanup) on its own NFQUEUE and its own nft table.
+# ---------------------------------------------------------------------------
+BCW_STATE_DIR = os.path.join(WZ_STATE, "bcw")
+BCW_RUNS_DIR = os.path.join(BCW_STATE_DIR, "runs")
+BCW_KEEP_RUNS = int(os.environ.get("BCW_KEEP_RUNS", "10") or 10)
+BCW_PROTOCOL_NAMES = {"http": "HTTP", "tls12": "HTTPS/TLS1.2",
+                      "tls13": "HTTPS/TLS1.3"}
+_BCW_LOCK = threading.Lock()
+_BCW_SCHED_TICK = int(os.environ.get("BCW_SCHED_TICK", "15") or 15)
+
+
+def bcw_ready():
+    if bcw is None:
+        return False, "engine module missing (blockcheck.py not installed)"
+    if not os.access(WZ_BCW, os.X_OK):
+        return False, "harness missing: %s" % WZ_BCW
+    return True, ""
+
+
+def _nfqueue_bound(qnum):
+    """True when the queue is bound by ANY process (procfs lists all queues)."""
+    try:
+        with open("/proc/net/netfilter/nfnetlink_queue") as handle:
+            for row in handle:
+                cols = row.split()
+                if cols and cols[0] == str(int(qnum)):
+                    return True
+    except (OSError, ValueError):
+        pass
+    return False
+
+
+def bcw_availability():
+    """Cheap health readout for the Select tab (no blockcheckw invocation)."""
+    if bcw is None:
+        return {"engine": False}
+    settings = bcw.env_defaults()
+    base = os.environ.get("BCW_ZAPRET_BASE", "/opt/zapret2")
+    version = ""
+    try:
+        with open(bcw.BCW_VERSION_FILE, "r", encoding="utf-8") as handle:
+            version = handle.read().strip()
+    except OSError:
+        pass
+    ready, error = bcw_ready()
+    return {
+        "engine": ready,
+        "engine_error": error,
+        "version": version,
+        "binary": settings.get("bin", ""),
+        "binary_present": os.access(settings.get("bin", ""), os.X_OK),
+        "nft_present": bool(shutil.which("nft")),
+        "zapret_base": base,
+        "nfqws2_present": os.path.exists(os.path.join(base, "nfq2", "nfqws2")),
+        "lua_present": all(os.path.exists(os.path.join(base, "lua", name))
+                           for name in ("zapret-lib.lua", "zapret-antidpi.lua")),
+        "queue": bcw.BCW_QUEUE_FIXED,
+        "queue_free": not _nfqueue_bound(bcw.BCW_QUEUE_FIXED),
+    }
+
+
+def _bcw_last_summary(last):
+    """Compact, UI-friendly view of the last finished run."""
+    if not last:
+        return None
+    domains = []
+    for dom in last.get("domains") or []:
+        domains.append({
+            "domain": dom.get("domain"),
+            "block_type": dom.get("block_type"),
+            "scanned": dom.get("scanned", 0),
+            "checked": dom.get("checked", 0),
+            "inconclusive": dom.get("inconclusive", False),
+            "working_count": len(dom.get("working") or []),
+            "refused_count": len(dom.get("refused") or []),
+            "working": (dom.get("working") or [])[:12],
+        })
+    return {
+        "run_id": last.get("run_id"),
+        "started_at": last.get("started_at"),
+        "finished_at": last.get("finished_at"),
+        "took_s": last.get("took_s"),
+        "ok": last.get("ok", False),
+        "success": last.get("success", False),
+        "errors": last.get("errors") or [],
+        "summary": bcw.summarize(last) if last else "",
+        "domains": domains,
+    }
+
+
+
+def bcw_overview():
+    """Everything the Select tab needs in one GET."""
+    ready, error = bcw_ready()
+    if not ready:
+        return {"ok": True, "available": False, "error": error,
+                "availability": {"engine": False}, "settings": {}, "schedule": {},
+                "job": {"state": "idle"}, "last": None}
+    settings, warnings, errors = bcw.load_settings(BCW_STATE_DIR)
+    schedule, swarnings, serrors = bcw.load_schedule(BCW_STATE_DIR)
+    sched_state = bcw.read_json(bcw.state_path(BCW_STATE_DIR, bcw.SCHEDULE_FILE),
+                                {}) or {}
+    job = bcw.load_job(BCW_STATE_DIR)
+    running = job.get("state") == "running" and pid_alive(job.get("pid"))
+    if job.get("state") == "running" and not running:
+        job["state"] = "lost"          # the panel restarted mid-run
+        bcw.save_job(BCW_STATE_DIR, job)
+    return {
+        "ok": True,
+        "available": True,
+        "availability": bcw_availability(),
+        "settings": settings,
+        "settings_warnings": warnings,
+        "settings_errors": errors,
+        "schedule": dict(schedule,
+                         next_run=sched_state.get("next_run"),
+                         next_run_local=bcw.format_local(sched_state.get("next_run")),
+                         last_run=sched_state.get("last_run"),
+                         last_run_local=bcw.format_local(sched_state.get("last_run"))),
+        "schedule_warnings": swarnings,
+        "schedule_errors": serrors,
+        "job": dict(job, running=running),
+        "last": _bcw_last_summary(
+            bcw.read_json(bcw.state_path(BCW_STATE_DIR, bcw.LAST_RUN_FILE))),
+    }
+
+
+def bcw_start_run(overrides=None, source="manual"):
+    """Persist (optional) overrides and launch one scan+check run in background."""
+    ready, error = bcw_ready()
+    if not ready:
+        return {"ok": False, "error": error}
+    with _BCW_LOCK:
+        job = bcw.load_job(BCW_STATE_DIR)
+        if job.get("state") == "running" and pid_alive(job.get("pid")):
+            return {"ok": False, "error": "a run is already in progress (run %s)"
+                    % job.get("run_id", "?")}
+        if overrides:
+            _merged, warnings, errors, saved = bcw.save_settings(BCW_STATE_DIR,
+                                                                 overrides)
+            if not saved:
+                return {"ok": False, "error": "cannot persist settings"}
+        else:
+            warnings, errors = [], []
+        settings, warnings, errors = bcw.load_settings(BCW_STATE_DIR)
+        if errors:
+            return {"ok": False, "error": "; ".join(errors), "errors": errors,
+                    "warnings": warnings}
+        run_id = time.strftime("%Y%m%d-%H%M%S")
+        run_dir = os.path.join(BCW_RUNS_DIR, run_id)
+        settings_file = os.path.join(run_dir, "settings.json")
+        try:
+            os.makedirs(run_dir, exist_ok=True)
+        except OSError as exc:
+            return {"ok": False, "error": "cannot create run dir: %s" % exc}
+        bcw.write_json(settings_file, settings)
+        job = {"state": "running", "source": source, "run_id": run_id,
+               "run_dir": run_dir, "pid": None, "rc": None,
+               "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        bcw.save_job(BCW_STATE_DIR, job)
+        try:
+            proc = subprocess.Popen(
+                [WZ_BCW, "run", settings_file, run_dir],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                start_new_session=True)
+        except OSError as exc:
+            job["state"] = "error"
+            bcw.save_job(BCW_STATE_DIR, job)
+            return {"ok": False, "error": "cannot start the harness: %s" % exc}
+        job["pid"] = proc.pid
+        bcw.save_job(BCW_STATE_DIR, job)
+        threading.Thread(target=_bcw_collect, args=(proc, job), daemon=True).start()
+    print("panel: bcw run %s started (%s)" % (run_id, source), flush=True)
+    return {"ok": True, "run_id": run_id, "pid": proc.pid, "settings": settings,
+            "warnings": warnings}
+
+
+def _bcw_collect(proc, job):
+    """Wait for the harness, parse the result, persist it, maybe import/apply."""
+    out = b""
+    if proc.stdout:
+        out = proc.stdout.read()
+        proc.stdout.close()
+    rc = proc.wait()
+    res = {}
+    start = out.find(b"{")
+    if start >= 0:
+        try:
+            res, _ = json.JSONDecoder().raw_decode(
+                out[start:].decode("utf-8", "replace"))
+        except ValueError:
+            res = {}
+    if not isinstance(res, dict) or not res:
+        res = bcw.read_json(os.path.join(job["run_dir"], "result.json"), {}) or {}
+    state = "done" if res.get("ok") else "error"
+    job = dict(job, state=state, rc=rc,
+               finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    bcw.save_job(BCW_STATE_DIR, job)
+    if res.get("ok"):
+        bcw.write_json(bcw.state_path(BCW_STATE_DIR, bcw.LAST_RUN_FILE), res)
+    try:
+        bcw.prune_runs(BCW_RUNS_DIR, BCW_KEEP_RUNS)
+    except Exception:
+        pass
+    summary = bcw.summarize(res) if res else "no result"
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    print("panel: bcw run %s finished rc=%s: %s" % (job.get("run_id"), rc, summary),
+          flush=True)
+    try:
+        with open(os.path.join(WZ_LOG, "actions.log"), "a", encoding="utf-8") as handle:
+            handle.write("[%s] [bcw] run %s: %s\n" % (stamp, job.get("run_id"),
+                                                      summary))
+    except OSError:
+        pass
+    if res.get("success") and (res.get("settings") or {}).get("auto_import"):
+        imported = bcw_import(run_id=job.get("run_id"))
+        if imported.get("ok"):
+            first = (imported.get("imported") or [{}])[0].get("id", "")
+            print("panel: bcw auto-imported: %s" % ", ".join(imported.get("ids", [])),
+                  flush=True)
+            if first and (res.get("settings") or {}).get("auto_apply"):
+                applied = apply(["strategy", first])
+                print("panel: bcw auto-apply '%s': ok=%s"
+                      % (first, applied.get("ok")), flush=True)
+
+
+def bcw_cancel():
+    """SIGTERM the whole harness process group (blockcheckw cleans up after it)."""
+    with _BCW_LOCK:
+        job = bcw.load_job(BCW_STATE_DIR)
+        if job.get("state") != "running" or not pid_alive(job.get("pid")):
+            return {"ok": False, "error": "no running selection"}
+        pid = int(job["pid"])
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except OSError:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                return {"ok": False, "error": "process already gone"}
+        job["state"] = "cancelling"
+        bcw.save_job(BCW_STATE_DIR, job)
+    print("panel: bcw run %s cancelled" % job.get("run_id"), flush=True)
+    return {"ok": True, "run_id": job.get("run_id")}
+
+
+def bcw_import(run_id=None, protocols=None, limit=None):
+    """Import the selected (false-positive-filtered) strategies of a finished
+    run into the live catalog.  Returns the created catalog entries."""
+    ready, error = bcw_ready()
+    if not ready:
+        return {"ok": False, "error": error}
+    path = (os.path.join(BCW_RUNS_DIR, str(run_id), "result.json") if run_id
+            else bcw.state_path(BCW_STATE_DIR, bcw.LAST_RUN_FILE))
+    result = bcw.read_json(path)
+    if not isinstance(result, dict) or not result.get("ok"):
+        return {"ok": False, "error": "no finished run to import from (%s)" % path}
+    rows = rows if isinstance(rows, list) else None
+    if rows:
+        # explicit selection from the UI (protocol+args pairs, still validated)
+        domain = ""
+        for dom in result.get("domains") or []:
+            if dom.get("domain"):
+                domain = dom["domain"]
+                break
+        clean = []
+        for row in rows:
+            if not isinstance(row, dict) or not row.get("args"):
+                continue
+            clean.append({
+                "protocol": str(row.get("protocol") or "HTTPS/TLS1.2"),
+                "args": str(row.get("args")),
+                "passes_ok": row.get("passes_ok", 0),
+                "passes_total": row.get("passes_total", 0),
+                "median_share": row.get("median_share"),
+                "median_latency_ms": row.get("median_latency_ms", 0),
+                "success_rate": row.get("success_rate", 1.0),
+                "admits": row.get("admits") or [],
+                "observed": row.get("observed", ""),
+                "working": True,
+            })
+        result = dict(result, domains=[{"domain": domain or "manual",
+                                        "block_type": "", "working": clean}])
+    settings, _, _ = bcw.load_settings(BCW_STATE_DIR)
+    if limit is not None:
+        try:
+            settings = dict(settings, max_import=max(0, min(int(limit), 100)))
+        except (TypeError, ValueError):
+            pass
+    if protocols:
+        allowed = {BCW_PROTOCOL_NAMES.get(str(p).strip().lower()) for p in protocols}
+        allowed.discard(None)
+        result = dict(result, domains=[
+            dict(dom, working=[row for row in dom.get("working") or []
+                               if row.get("protocol") in allowed])
+            for dom in result.get("domains") or []])
+    entries, skipped = bcw.plan_import(result, settings, strategies(),
+                                       run_id=str(run_id or "last"))
+    if not entries:
+        return {"ok": False, "error": "nothing to import", "skipped": skipped}
+    catalog = read_json(STRATEGIES_FILE, {"strategies": []}) or {"strategies": []}
+    merged = bcw.merge_catalog(catalog, entries)
+    if not write_json(STRATEGIES_FILE, merged):
+        return {"ok": False, "error": "failed to write strategies file"}
+    ids = [entry["id"] for entry in entries]
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    print("panel: bcw imported %s" % ", ".join(ids), flush=True)
+    try:
+        with open(os.path.join(WZ_LOG, "actions.log"), "a", encoding="utf-8") as handle:
+            handle.write("[%s] [bcw] imported strategies: %s\n" % (stamp, ", ".join(ids)))
+    except OSError:
+        pass
+    return {"ok": True, "ids": ids, "count": len(ids),
+            "strategies": [{"id": e["id"], "name": e["name"],
+                            "protocol": e["protocol"]} for e in entries],
+            "skipped": skipped}
+
+
+def _bcw_scheduler():
+    """Background loop firing the time-based selection runs (requirement 4)."""
+    while True:
+        time.sleep(max(5, _BCW_SCHED_TICK))
+        try:
+            if bcw is None or not bcw_ready()[0]:
+                continue
+            schedule, _, _ = bcw.load_schedule(BCW_STATE_DIR)
+            state_path = bcw.state_path(BCW_STATE_DIR, bcw.SCHEDULE_FILE)
+            state = bcw.read_json(state_path, {}) or {}
+            now = time.time()
+            if not schedule.get("enabled"):
+                if state.get("next_run"):
+                    state.pop("next_run", None)
+                    bcw.write_json(state_path, state)
+                continue
+            if not state.get("next_run"):
+                state["next_run"] = bcw.next_run_at(schedule, now, state.get("last_run"))
+                bcw.write_json(state_path, state)
+                continue
+            if not bcw.schedule_due(schedule, now, state.get("next_run")):
+                continue
+            fired = state["next_run"]
+            state["last_run"] = fired
+            state["next_run"] = bcw.next_run_at(schedule, now, fired)
+            bcw.write_json(state_path, state)
+            print("panel: bcw scheduler fires a run (slot %s)"
+                  % bcw.format_local(fired), flush=True)
+            res = bcw_start_run(None, source="scheduled")
+            if not res.get("ok"):
+                print("panel: bcw scheduled run refused: %s" % res.get("error"),
+                      flush=True)
+        except Exception as exc:            # never let the thread die silently
+            print("panel: bcw scheduler error: %s" % exc, flush=True)
+
+
 def status():
     strat = active_strategy()
     entry = {}
@@ -773,6 +1157,8 @@ class Handler(BaseHTTPRequestHandler):
                 "test_queue": TEST_QUEUE,
                 "yt_dlp_available": os.path.exists(TEST_YTDLP_BIN),
             })
+        if path == "/api/bcw":
+            return self._send(200, bcw_overview())
         if path == "/api/strategy":
             return self._send(200, {"id": active_strategy()})
         if path == "/api/exit":
@@ -829,6 +1215,50 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_body()
             res = delete_strategy(str(body.get("id", "")))
             return self._send(200 if res.get("ok") else 400, res)
+        if path == "/api/bcw/settings":
+            if bcw is None:
+                return self._send(400, {"ok": False,
+                                        "error": "strategy selection unavailable"})
+            merged, warnings, errors, saved = bcw.save_settings(
+                BCW_STATE_DIR, self._read_body())
+            return self._send(200 if saved and not errors else 400,
+                              {"ok": bool(saved) and not errors, "settings": merged,
+                               "warnings": warnings, "errors": errors})
+        if path == "/api/bcw/reset":
+            if bcw is None:
+                return self._send(400, {"ok": False,
+                                        "error": "strategy selection unavailable"})
+            return self._send(200, {"ok": True,
+                                    "settings": bcw.reset_settings(BCW_STATE_DIR)})
+        if path == "/api/bcw/run":
+            body = self._read_body()
+            overrides = body.get("settings") if isinstance(body.get("settings"),
+                                                           dict) else None
+            res = bcw_start_run(overrides, source="manual")
+            return self._send(200 if res.get("ok") else 400, res)
+        if path == "/api/bcw/cancel":
+            res = bcw_cancel()
+            return self._send(200 if res.get("ok") else 400, res)
+        if path == "/api/bcw/import":
+            body = self._read_body()
+            res = bcw_import(body.get("run_id"), body.get("protocols"),
+                             body.get("limit"), body.get("rows"))
+            return self._send(200 if res.get("ok") else 400, res)
+        if path == "/api/bcw/schedule":
+            if bcw is None:
+                return self._send(400, {"ok": False,
+                                        "error": "strategy selection unavailable"})
+            merged, warnings, errors, saved = bcw.save_schedule(
+                BCW_STATE_DIR, self._read_body())
+            if saved and not errors:
+                # (re)arm immediately: next tick stores/computes the slot
+                state_path = bcw.state_path(BCW_STATE_DIR, bcw.SCHEDULE_FILE)
+                state = bcw.read_json(state_path, {}) or {}
+                state.pop("next_run", None)
+                bcw.write_json(state_path, state)
+            return self._send(200 if saved and not errors else 400,
+                              {"ok": bool(saved) and not errors, "schedule": merged,
+                               "warnings": warnings, "errors": errors})
         if path == "/api/exit":
             body = self._read_body()
             mode = str(body.get("mode", ""))
@@ -863,6 +1293,8 @@ def main():
         return 0
     if "--check" in sys.argv:
         return check()
+    if bcw is not None and os.access(WZ_BCW, os.X_OK):
+        threading.Thread(target=_bcw_scheduler, daemon=True).start()
     httpd = ThreadingHTTPServer((HTTPD_HOST, HTTPD_PORT), Handler)
     print("panel listening on %s:%s" % (HTTPD_HOST, HTTPD_PORT), flush=True)
     try:

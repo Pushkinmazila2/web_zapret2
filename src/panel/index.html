@@ -46,6 +46,7 @@ button[disabled] { opacity:.55; cursor:default; }
   <button class="tab active" data-tab="status">Status</button>
   <button class="tab" data-tab="strategy">Strategy</button>
   <button class="tab" data-tab="test">Test</button>
+  <button class="tab" data-tab="bcw">Select</button>
   <button class="tab" data-tab="logs">Logs</button>
 </div>
 
@@ -130,6 +131,147 @@ button[disabled] { opacity:.55; cursor:default; }
     <span class="status" id="test-status"></span>
   </p>
   <pre class="mono scrollable" id="test-output" style="height:220px; max-height:220px; display:none;"></pre>
+</div>
+</section>
+
+<section class="tab-page" id="page-bcw">
+<div class="card">
+  <label>Strategy selection &mdash; blockcheckw: grid scan + false-positive filter</label>
+  <p class="status" id="bcw-availability">loading ...</p>
+  <p style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+    <button class="primary" id="bcw-run">Run selection (scan + check)</button>
+    <button id="bcw-cancel" disabled>Cancel run</button>
+    <button id="bcw-save">Save settings</button>
+    <button id="bcw-reset">Reset to .env defaults</button>
+  </p>
+  <p class="status" id="bcw-job"></p>
+</div>
+
+<div class="card">
+  <label>Strategy generation grid &amp; multithreaded SO_MARK probes</label>
+  <div style="display:flex; gap:12px; flex-wrap:wrap; margin:8px 0;">
+    <div style="flex:2 1 300px; min-width:220px;"><label>Domains (comma separated)</label>
+      <input id="bcw-domains" type="text" style="width:100%; margin:4px 0;" placeholder="youtube.com"/></div>
+    <div style="flex:1 1 180px; min-width:160px;"><label>Strategy grid</label>
+      <select id="bcw-grid" style="width:100%; margin:4px 0; padding:7px 10px; background:#121a26; color:var(--fg); border:1px solid #33455b;">
+        <option value="corpus">built-in corpus (~14k)</option>
+        <option value="file">from file</option>
+      </select></div>
+    <div style="flex:2 1 260px; min-width:220px;"><label>Corpus file (--from-file)</label>
+      <input id="bcw-grid-file" type="text" style="width:100%; margin:4px 0;" placeholder="/opt/webzapret/state/bcw/corpus.txt"/></div>
+  </div>
+  <div style="display:flex; gap:12px; flex-wrap:wrap;">
+    <div style="flex:1 1 230px; min-width:200px;"><label>Protocols</label>
+      <p style="margin:4px 0;" id="bcw-protocols">
+        <label style="text-transform:none; margin-right:10px;"><input type="checkbox" value="http"> HTTP</label>
+        <label style="text-transform:none; margin-right:10px;"><input type="checkbox" value="tls12" checked> TLS 1.2</label>
+        <label style="text-transform:none;"><input type="checkbox" value="tls13" checked> TLS 1.3</label>
+      </p></div>
+    <div style="flex:0 1 110px;"><label>DNS</label>
+      <select id="bcw-dns" style="width:100%; margin:4px 0; padding:7px 10px; background:#121a26; color:var(--fg); border:1px solid #33455b;">
+        <option>auto</option><option>system</option><option>doh</option>
+      </select></div>
+    <div style="flex:0 1 120px;"><label>Workers (SO_MARK)</label>
+      <input id="bcw-workers" type="number" min="1" max="2048" style="width:100%; margin:4px 0;"/></div>
+    <div style="flex:0 1 150px;"><label>Profiles per nfqws2</label>
+      <input id="bcw-profiles" type="number" min="1" max="65535" style="width:100%; margin:4px 0;"/></div>
+    <div style="flex:0 1 140px;"><label>Scan timeout (s, 0=&infin;)</label>
+      <input id="bcw-scan-timeout" type="number" min="0" max="3600" style="width:100%; margin:4px 0;"/></div>
+    <div style="flex:0 1 130px;"><label>Top N per protocol</label>
+      <input id="bcw-top" type="number" min="0" max="1000" style="width:100%; margin:4px 0;"/></div>
+  </div>
+  <div style="display:flex; gap:12px; flex-wrap:wrap; margin-top:6px;">
+    <div style="flex:1 1 260px; min-width:220px;"><label>Via &mdash; scan through this gateway/proxy</label>
+      <input id="bcw-via" type="text" style="width:100%; margin:4px 0;" placeholder="socks5://10.0.0.1:1080"/></div>
+    <div style="flex:1 1 260px; min-width:220px;"><label>Alive via &mdash; verify IP-blocked hosts through</label>
+      <input id="bcw-alive-via" type="text" style="width:100%; margin:4px 0;" placeholder="socks5://host:1080"/></div>
+  </div>
+</div>
+
+<div class="card">
+  <label>False-positive filter &mdash; two-axis verification (check)</label>
+  <p class="status">A candidate counts as working only if the <b>bytes axis</b>
+    (<span class="mono">--probe-path</span>, repeated <span class="mono">--passes</span> times)
+    delivered the full reference volume <b>every</b> time AND the <b>identity axis</b>
+    (<span class="mono">--identity-path</span>) did not refute the resource
+    (circle of fates: Good &middot; Grinding &middot; Mirage &middot; Trap &middot; Dead).</p>
+  <div style="display:flex; gap:12px; flex-wrap:wrap; margin:8px 0;">
+    <div style="flex:0 1 110px;"><label>Passes (M)</label>
+      <input id="bcw-passes" type="number" min="0" max="10" style="width:100%; margin:4px 0;"/></div>
+    <div style="flex:0 1 110px;"><label>Take (stop after)</label>
+      <input id="bcw-take" type="number" min="0" max="1000" style="width:100%; margin:4px 0;"/></div>
+    <div style="flex:0 1 130px;"><label>Probe timeout (s)</label>
+      <input id="bcw-check-timeout" type="number" min="1" max="60" style="width:100%; margin:4px 0;"/></div>
+    <div style="flex:0 1 130px;"><label>Idle threshold (ms)</label>
+      <input id="bcw-idle-ms" type="number" min="100" max="60000" style="width:100%; margin:4px 0;"/></div>
+    <div style="flex:1 1 170px; min-width:150px;"><label>Probe path (bytes axis)</label>
+      <input id="bcw-probe-path" type="text" style="width:100%; margin:4px 0;" placeholder="/"/></div>
+    <div style="flex:1 1 170px; min-width:150px;"><label>Identity path (authenticity)</label>
+      <input id="bcw-identity-path" type="text" style="width:100%; margin:4px 0;" placeholder="/robots.txt"/></div>
+    <div style="flex:1 1 200px; min-width:170px;"><label>Reference via (clean egress)</label>
+      <input id="bcw-reference-via" type="text" style="width:100%; margin:4px 0;" placeholder="100.64.0.9"/></div>
+    <div style="flex:0 1 130px;"><label>Min volume share</label>
+      <input id="bcw-min-share" type="number" min="0" max="10" step="0.05" style="width:100%; margin:4px 0;"/></div>
+  </div>
+</div>
+
+  <p style="display:flex; gap:14px; flex-wrap:wrap; margin:4px 0;">
+    <label style="text-transform:none;"><input type="checkbox" id="bcw-exclude-mirage" checked> refuse Mirage (refuted authenticity)</label>
+    <label style="text-transform:none;"><input type="checkbox" id="bcw-auto-import"> auto-import the survivors after a run</label>
+    <label style="text-transform:none;"><input type="checkbox" id="bcw-auto-apply"> auto-apply the best one (restarts nfqws)</label>
+  </p>
+  <div style="display:flex; gap:12px; flex-wrap:wrap; margin-top:4px;">
+    <div style="flex:0 1 170px;"><label>Import top N per protocol</label>
+      <input id="bcw-max-import" type="number" min="0" max="100" style="width:100%; margin:4px 0;"/></div>
+    <div style="flex:1 1 180px; min-width:150px;"><label>Import id prefix</label>
+      <input id="bcw-import-prefix" type="text" style="width:100%; margin:4px 0;"/></div>
+  </div>
+</div>
+
+<div class="card">
+  <label>Scheduler &mdash; run the selection on a schedule</label>
+  <p style="display:flex; gap:14px; flex-wrap:wrap; margin:6px 0;">
+    <label style="text-transform:none;"><input type="checkbox" id="bcw-sched-enabled"> enabled</label>
+    <label style="text-transform:none; margin-right:10px;">mode
+      <select id="bcw-sched-mode" style="padding:4px 8px; background:#121a26; color:var(--fg); border:1px solid #33455b;">
+        <option value="interval">every N minutes</option>
+        <option value="daily">daily at</option>
+        <option value="weekly">weekly on</option>
+      </select></label>
+    <label style="text-transform:none; margin-right:10px;">N (min) <input id="bcw-sched-interval" type="number" min="5" max="10080" style="width:90px;"/></label>
+    <label style="text-transform:none; margin-right:10px;">at <input id="bcw-sched-at" type="text" placeholder="04:00" style="width:80px;"/></label>
+    <label style="text-transform:none;"><input type="checkbox" id="bcw-sched-run-on-start"> run immediately when enabled (interval)</label>
+  </p>
+  <p style="margin:4px 0;" id="bcw-sched-days">
+    <label style="text-transform:none; margin-right:8px;"><input type="checkbox" value="mon"> Mon</label>
+    <label style="text-transform:none; margin-right:8px;"><input type="checkbox" value="tue"> Tue</label>
+    <label style="text-transform:none; margin-right:8px;"><input type="checkbox" value="wed"> Wed</label>
+    <label style="text-transform:none; margin-right:8px;"><input type="checkbox" value="thu"> Thu</label>
+    <label style="text-transform:none; margin-right:8px;"><input type="checkbox" value="fri"> Fri</label>
+    <label style="text-transform:none; margin-right:8px;"><input type="checkbox" value="sat"> Sat</label>
+    <label style="text-transform:none; margin-right:8px;"><input type="checkbox" value="sun"> Sun</label>
+  </p>
+  <p style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+    <button id="bcw-schedule-save">Save schedule</button>
+    <span class="status" id="bcw-next-run"></span>
+  </p>
+</div>
+
+<div class="card">
+  <label>Last run &mdash; verified strategies</label>
+  <p class="status" id="bcw-last-summary">no runs yet</p>
+  <div class="scrollable" style="max-height:340px;">
+    <table>
+      <thead><tr><th></th><th>protocol</th><th>nfqws2 args</th><th>passes</th>
+        <th>share</th><th>ms</th><th>authenticity</th></tr></thead>
+      <tbody id="bcw-rows"></tbody>
+    </table>
+  </div>
+  <p style="display:flex; gap:8px; margin-top:8px;">
+    <button id="bcw-import-selected">Import selected</button>
+    <button id="bcw-import-all">Import all working (top N per protocol)</button>
+  </p>
+  <pre class="mono scrollable" id="bcw-log" style="height:180px; max-height:180px; margin-top:10px;"></pre>
 </div>
 </section>
 
@@ -444,6 +586,183 @@ $('#delete-strategy-btn').addEventListener('click', async () => {
 });
 
 
+// --- Strategy selection (blockcheckw) --------------------------------------
+let bcwLoaded = false;
+
+function bcwCheckedProtocols() {
+  return Array.prototype.map.call(
+    document.querySelectorAll('#bcw-protocols input:checked'), i => i.value);
+}
+
+function bcwCheckedDays() {
+  return Array.prototype.map.call(
+    document.querySelectorAll('#bcw-sched-days input:checked'), i => i.value);
+}
+
+function bcwCollect() {
+  const num = (id, dflt) => {
+    const v = parseInt($(id).value, 10);
+    return isNaN(v) ? dflt : v;
+  };
+  return {
+    enabled: true,
+    domains: $('#bcw-domains').value.trim(),
+    grid: $('#bcw-grid').value,
+    grid_file: $('#bcw-grid-file').value.trim(),
+    protocols: bcwCheckedProtocols(),
+    dns: $('#bcw-dns').value,
+    workers: num('#bcw-workers', 64),
+    profiles_per_instance: num('#bcw-profiles', 1024),
+    scan_timeout: num('#bcw-scan-timeout', 0),
+    scan_top: num('#bcw-top', 5),
+    via: $('#bcw-via').value.trim(),
+    alive_via: $('#bcw-alive-via').value.trim(),
+    passes: num('#bcw-passes', 3),
+    take: num('#bcw-take', 3),
+    check_timeout: num('#bcw-check-timeout', 3),
+    idle_ms: num('#bcw-idle-ms', 1000),
+    probe_path: $('#bcw-probe-path').value.trim() || '/',
+    identity_path: $('#bcw-identity-path').value.trim() || '/robots.txt',
+    reference_via: $('#bcw-reference-via').value.trim(),
+    min_share: parseFloat($('#bcw-min-share').value) || 0,
+    exclude_mirage: $('#bcw-exclude-mirage').checked,
+    auto_import: $('#bcw-auto-import').checked,
+    auto_apply: $('#bcw-auto-apply').checked,
+    max_import: num('#bcw-max-import', 5),
+    import_prefix: $('#bcw-import-prefix').value.trim() || 'bcw',
+  };
+}
+
+function bcwCollectSchedule() {
+  return {
+    enabled: $('#bcw-sched-enabled').checked,
+    mode: $('#bcw-sched-mode').value,
+    interval_min: parseInt($('#bcw-sched-interval').value, 10) || 360,
+    at: $('#bcw-sched-at').value.trim() || '04:00',
+    days: bcwCheckedDays(),
+    run_on_start: $('#bcw-sched-run-on-start').checked,
+  };
+}
+
+function bcwSyncInputs(o) {
+  const s = o.settings || {};
+  $('#bcw-domains').value = (s.domains || []).join(', ');
+  $('#bcw-grid').value = s.grid || 'corpus';
+  $('#bcw-grid-file').value = s.grid_file || '';
+  document.querySelectorAll('#bcw-protocols input').forEach(i => {
+    i.checked = (s.protocols || []).includes(i.value);
+  });
+  $('#bcw-dns').value = s.dns || 'auto';
+  $('#bcw-workers').value = s.workers;
+  $('#bcw-profiles').value = s.profiles_per_instance;
+  $('#bcw-scan-timeout').value = s.scan_timeout;
+  $('#bcw-top').value = s.scan_top;
+  $('#bcw-via').value = s.via || '';
+  $('#bcw-alive-via').value = s.alive_via || '';
+  $('#bcw-passes').value = s.passes;
+  $('#bcw-take').value = s.take;
+  $('#bcw-check-timeout').value = s.check_timeout;
+  $('#bcw-idle-ms').value = s.idle_ms;
+  $('#bcw-probe-path').value = s.probe_path || '/';
+  $('#bcw-identity-path').value = s.identity_path || '/robots.txt';
+  $('#bcw-reference-via').value = s.reference_via || '';
+  $('#bcw-min-share').value = s.min_share || 0;
+  $('#bcw-exclude-mirage').checked = s.exclude_mirage !== false;
+  $('#bcw-auto-import').checked = !!s.auto_import;
+  $('#bcw-auto-apply').checked = !!s.auto_apply;
+  $('#bcw-max-import').value = s.max_import;
+  $('#bcw-import-prefix').value = s.import_prefix || 'bcw';
+  const sch = o.schedule || {};
+  $('#bcw-sched-enabled').checked = !!sch.enabled;
+  $('#bcw-sched-mode').value = sch.mode || 'daily';
+  $('#bcw-sched-interval').value = sch.interval_min || 360;
+  $('#bcw-sched-at').value = sch.at || '04:00';
+  $('#bcw-sched-run-on-start').checked = !!sch.run_on_start;
+  document.querySelectorAll('#bcw-sched-days input').forEach(i => {
+    i.checked = (sch.days || []).includes(i.value);
+  });
+}
+
+function bcwAvailabilityLine(a) {
+  if (!a || a.engine === false) {
+    return 'Strategy selection is NOT available: '
+      + (a && a.engine_error ? esc(a.engine_error) : 'engine missing');
+  }
+  const mark = (ok, label) => '<span style="color:'
+    + (ok ? 'var(--ok)' : 'var(--bad)') + '">' + (ok ? '&#10003; ' : '&#10007; ')
+    + label + '</span>';
+  return (a.version ? 'blockcheckw ' + esc(a.version) + ' &middot; ' : '')
+    + mark(a.binary_present, 'binary') + ' &middot; '
+    + mark(a.nft_present, 'nft') + ' &middot; '
+    + mark(a.nfqws2_present, 'nfqws2 layout') + ' &middot; '
+    + mark(a.lua_present, 'lua') + ' &middot; '
+    + mark(a.queue_free, 'NFQUEUE ' + a.queue + ' free')
+    + ' <span class="status">(live gateway uses 210/211)</span>';
+}
+
+function bcwRenderLast(last) {
+  const body = $('#bcw-rows');
+  body.innerHTML = '';
+  if (!last) { $('#bcw-last-summary').textContent = 'no runs yet'; return; }
+  $('#bcw-last-summary').innerHTML =
+    (last.success ? '<b style="color:var(--ok)">working strategies found</b>'
+                  : '<b style="color:var(--bad)">no working strategy</b>')
+    + ' &middot; run ' + esc(last.run_id || '') + ' &middot; ' + esc(last.summary || '');
+  (last.domains || []).forEach(d => {
+    (d.working || []).forEach(r => {
+      const share = (r.median_share === null || r.median_share === undefined)
+        ? '&mdash;' : Math.round(r.median_share * 100) + '%';
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td><input type="checkbox" class="bcw-row" data-protocol="'
+        + esc(r.protocol) + '" data-args="' + esc(r.args) + '" checked></td>'
+        + '<td>' + esc(d.domain) + '<br><span class="status">' + esc(r.protocol)
+        + '</span></td>'
+        + '<td class="mono" style="max-width:420px; overflow:hidden; text-overflow:ellipsis;" title="'
+        + esc(r.args) + '">' + esc(r.args) + '</td>'
+        + '<td>' + r.passes_ok + '/' + r.passes_total + '</td>'
+        + '<td>' + share + '</td>'
+        + '<td>' + (r.median_latency_ms || '?') + '</td>'
+        + '<td>' + esc((r.admits || []).join(',')) + '</td>';
+      body.appendChild(tr);
+    });
+  });
+}
+
+async function loadBcw() {
+  let o;
+  try { o = await api('/api/bcw'); }
+  catch (e) { $('#bcw-availability').textContent = 'status fetch failed: ' + e; return; }
+  $('#bcw-availability').innerHTML = bcwAvailabilityLine(o.availability);
+  if (o.settings_errors && o.settings_errors.length) {
+    $('#bcw-availability').innerHTML += '<br><span style="color:var(--bad)">settings: '
+      + esc(o.settings_errors.join('; ')) + '</span>';
+  }
+  const job = o.job || {};
+  $('#bcw-job').innerHTML = job.state
+    ? 'job: <b>' + esc(job.state) + '</b>'
+      + (job.run_id ? ' &middot; run ' + esc(job.run_id) : '')
+      + (job.source ? ' &middot; ' + esc(job.source) : '')
+      + (job.started_at ? ' &middot; since ' + esc(job.started_at) : '')
+      + (job.rc !== null && job.rc !== undefined && job.state !== 'running'
+         ? ' &middot; rc=' + esc(job.rc) : '')
+    : 'job: idle';
+  $('#bcw-cancel').disabled = !(job.state === 'running' || job.state === 'cancelling');
+  const sch = o.schedule || {};
+  $('#bcw-next-run').innerHTML = sch.enabled
+    ? 'next run: <b>' + esc(sch.next_run_local || 'computing...') + '</b>'
+      + (sch.last_run_local ? ' &middot; last: ' + esc(sch.last_run_local) : '')
+    : 'scheduler disabled';
+  bcwRenderLast(o.last);
+  if (!bcwLoaded && o.available) { bcwSyncInputs(o); bcwLoaded = true; }
+}
+
+async function loadBcwLog() {
+  try {
+    const r = await api('/api/logs?src=bcw&n=120');
+    $('#bcw-log').textContent = r.log || '(no log)';
+  } catch (e) { /* ignore */ }
+}
+
 async function loadLog() {
   const src = $('#log-src').value;
   const r = await api('/api/logs?src=' + encodeURIComponent(src) + '&n=300');
@@ -470,13 +789,81 @@ $('#conn-rows').addEventListener('click', (e) => {
   if (b) copyText(b.getAttribute('data-copy'));
 });
 
+$('#bcw-run').addEventListener('click', async () => {
+  const btn = $('#bcw-run');
+  btn.disabled = true;
+  try {
+    const res = await api('/api/bcw/run',
+      { method: 'POST', body: JSON.stringify({ settings: bcwCollect() }) });
+    if (res.ok) { toast('selection started: run ' + res.run_id); await loadBcw(); }
+    else toast('run refused: ' + (res.error || 'unknown error'), true);
+  } catch (e) { toast('run failed: ' + e, true); }
+  finally { btn.disabled = false; }
+});
+
+$('#bcw-cancel').addEventListener('click', async () => {
+  const res = await api('/api/bcw/cancel', { method: 'POST', body: '{}' });
+  toast(res.ok ? 'cancelling run ' + res.run_id
+               : 'cancel failed: ' + (res.error || '?'), !res.ok);
+  loadBcw();
+});
+
+$('#bcw-save').addEventListener('click', async () => {
+  const res = await api('/api/bcw/settings',
+    { method: 'POST', body: JSON.stringify(bcwCollect()) });
+  if (res.ok) toast('settings saved (survive panel restarts)');
+  else toast('settings rejected: '
+    + ((res.errors || []).join('; ') || res.error || '?'), true);
+  loadBcw();
+});
+
+$('#bcw-reset').addEventListener('click', async () => {
+  const res = await api('/api/bcw/reset', { method: 'POST', body: '{}' });
+  if (res.ok) { toast('settings reset to .env defaults'); bcwLoaded = false; await loadBcw(); }
+  else toast('reset failed', true);
+});
+
+$('#bcw-schedule-save').addEventListener('click', async () => {
+  const res = await api('/api/bcw/schedule',
+    { method: 'POST', body: JSON.stringify(bcwCollectSchedule()) });
+  if (res.ok) toast('schedule saved');
+  else toast('schedule rejected: ' + ((res.errors || []).join('; ') || '?'), true);
+  loadBcw();
+});
+
+$('#bcw-import-selected').addEventListener('click', async () => {
+  const rows = Array.prototype.map.call(
+    document.querySelectorAll('#bcw-rows .bcw-row:checked'),
+    i => ({ protocol: i.dataset.protocol, args: i.dataset.args }));
+  if (!rows.length) { toast('select at least one strategy', true); return; }
+  const res = await api('/api/bcw/import',
+    { method: 'POST', body: JSON.stringify({ rows }) });
+  if (res.ok) { toast('imported: ' + res.ids.join(', ')); await loadStrategies(); }
+  else toast('import failed: ' + (res.error || '?'), true);
+});
+
+$('#bcw-import-all').addEventListener('click', async () => {
+  const res = await api('/api/bcw/import', { method: 'POST', body: JSON.stringify({
+    protocols: bcwCheckedProtocols(),
+    limit: parseInt($('#bcw-max-import').value, 10) || 5,
+  }) });
+  if (res.ok) {
+    toast('imported ' + res.count + ' strategy(ies): ' + res.ids.join(', '));
+    await loadStrategies();
+  } else toast('import failed: ' + (res.error || '?'), true);
+});
+
 setInterval(loadStatus, 5000);
 setInterval(loadLog, 5000);
+setInterval(loadBcw, 5000);
+setInterval(loadBcwLog, 5000);
 
 loadStatus();
 loadStrategies();
 loadTestInfo();
 loadLog();
+loadBcw();
+loadBcwLog();
 </script>
 </body>
 </html>
