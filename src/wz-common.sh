@@ -39,9 +39,9 @@ IP=/usr/sbin/ip
 # load nfqws/firewall constants (may be overridden by env)
 [ -r "$WZ_CFG/zapret.default" ] && . "$WZ_CFG/zapret.default" 2>/dev/null || true
 : "${DESYNC_MARK:=0x40000000}"
-: "${QNUM_TCP:=200}"
-: "${QNUM_UDP:=201}"
-: "${QNUM_TEST:=202}"          # NFQUEUE queue bound by the ISOLATED test nfqws
+: "${QNUM_TCP:=210}"
+: "${QNUM_UDP:=211}"
+: "${QNUM_TEST:=212}"          # NFQUEUE queue bound by the ISOLATED test nfqws
 : "${NFQ_TCP_PORTS:=80,443}"
 : "${NFQ_UDP_PORTS:=443}"
 : "${NFQWS_TCP_PKT_OUT:=9}"

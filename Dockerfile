@@ -27,6 +27,20 @@ RUN git init zapret \
  && git checkout --detach FETCH_HEAD \
  && make -f Makefile
 
+# ------------- builder: blockcheckw (pinned upstream + embedded corpus) -------
+FROM rust:1.90-bookworm AS blockcheck-builder
+ARG BLOCKCHECKW_COMMIT=0cc5cb530d2f78461bd6b92412d2fba0edcdaba1
+RUN apt-get update && apt-get install -y --no-install-recommends cmake clang \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build/blockcheckw
+RUN git init . \
+ && git remote add origin https://github.com/rcd27/blockcheckw.git \
+ && git fetch --depth 1 origin "$BLOCKCHECKW_COMMIT" \
+ && git checkout --detach FETCH_HEAD \
+ && cargo build --locked --release --bin blockcheckw \
+ && printf '%s\n' "$BLOCKCHECKW_COMMIT" > /build/blockcheckw.version
+
+
 # ------------- builder: wz-udprelay (C, no deps) ------------------------------
 FROM debian:bookworm-slim AS relay-builder
 ARG DEBIAN_FRONTEND=noninteractive
@@ -47,7 +61,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         dante-server \
         redsocks \
         # networking / management
-        iptables iproute2 iputils-ping procps curl ca-certificates \
+        iptables nftables iproute2 iputils-ping procps curl ca-certificates \
         util-linux tzdata libcap2-bin \
         # nfqws runtime deps (nfqws links -lmnl, -lz, -lnetfilter_queue, -lnfnetlink)
         libnetfilter-queue1 libnfnetlink0 libpcap0.8 libmnl0 zlib1g \
@@ -76,10 +90,18 @@ COPY --from=zapret-builder /build/zapret/lua/ /opt/webzapret/lua/
 COPY --from=relay-builder /build/wz-udprelay /opt/webzapret/bin/wz-udprelay
 # config templates + scripts + panel
 COPY config/ /opt/webzapret/config/
-COPY src/entrypoint.sh src/wz-common.sh src/wz-fw.sh src/wz-svc.sh src/wz-apply.sh src/wz-test.sh \
+COPY src/entrypoint.sh src/wz-common.sh src/wz-fw.sh src/wz-svc.sh src/wz-apply.sh src/wz-test.sh src/wz-bcw.sh \
      /opt/webzapret/scripts/
 COPY src/panel/ /opt/webzapret/panel/
-COPY src/strategy.py /opt/webzapret/scripts/strategy.py
+COPY src/strategy.py src/blockcheck.py /opt/webzapret/scripts/
+COPY --from=blockcheck-builder /build/blockcheckw/target/release/blockcheckw /opt/webzapret/bin/blockcheckw
+COPY --from=blockcheck-builder /build/blockcheckw.version /opt/webzapret/config/blockcheckw.version
+# Upstream blockcheckw expects this fixed zapret2 layout.
+RUN mkdir -p /opt/zapret2/nfq2 \
+ && ln -s /opt/webzapret/bin/nfqws2 /opt/zapret2/nfq2/nfqws2 \
+ && ln -s /opt/webzapret/lua /opt/zapret2/lua \
+ && test -x /opt/zapret2/nfq2/nfqws2 \
+ && /opt/webzapret/bin/blockcheckw --version
 COPY tests/ /opt/webzapret/tests/
 
 # narrow-capability helper: relay needs NET_ADMIN only at TUN setup

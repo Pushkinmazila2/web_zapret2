@@ -359,6 +359,8 @@ def save_settings(state_dir, values, environ=None):
         if key in SETTINGS_SPEC:
             persisted[key] = value
     merged, warnings, errors = normalize(persisted, base)
+    if errors:
+        return merged, warnings, errors, False
     ok = write_json(state_path(state_dir, SETTINGS_FILE), persisted)
     return merged, warnings, errors, ok
 
@@ -386,6 +388,8 @@ def save_schedule(state_dir, values, environ=None):
         if key in SCHEDULE_SPEC:
             persisted[key] = value
     merged, warnings, errors = normalize_schedule(persisted, base)
+    if errors:
+        return merged, warnings, errors, False
     ok = write_json(state_path(state_dir, SCHEDULE_FILE), persisted)
     return merged, warnings, errors, ok
 

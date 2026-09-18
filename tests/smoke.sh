@@ -89,6 +89,22 @@ if [ -x /opt/webzapret/scripts/wz-test.sh ]; then
 else
     bad "wz-test.sh missing"
 fi
+
+step "8. strategy-selection harness (blockcheckw preflight, no scan)"
+if [ -x /opt/webzapret/scripts/wz-bcw.sh ]; then
+    if BCW=$(/opt/webzapret/scripts/wz-bcw.sh --check 2>&1); then
+        ok "wz-bcw.sh --check: $BCW"
+    else
+        bad "wz-bcw.sh --check failed: $BCW (see /var/log/webzapret/blockcheck.log)"
+    fi
+else
+    bad "wz-bcw.sh missing"
+fi
+B=$(curl -fsS --max-time 5 http://127.0.0.1:8080/api/bcw 2>/dev/null) && \
+    { echo "$B" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert "settings" in d and "schedule" in d and "available" in d' \
+        && ok "GET /api/bcw overview present" || bad "bcw JSON invalid"; } || \
+    bad "GET /api/bcw failed"
+
 T=$(curl -fsS --max-time 5 http://127.0.0.1:8080/api/testinfo 2>/dev/null) && \
     { echo "$T" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["test_url"].startswith("http"); assert isinstance(d["test_timeout"], int)' \
         && ok "GET /api/testinfo defaults present" || bad "testinfo JSON invalid"; } || \

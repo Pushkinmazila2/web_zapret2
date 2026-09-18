@@ -74,9 +74,9 @@ try:
 except ValueError:
     TEST_YTDLP_TIMEOUT = 120
 try:
-    TEST_QUEUE = int(os.environ.get("QNUM_TEST", "202") or 202)
+    TEST_QUEUE = int(os.environ.get("QNUM_TEST", "212") or 212)
 except ValueError:
-    TEST_QUEUE = 202
+    TEST_QUEUE = 212
 _TEST_URL_RE = re.compile(r"^https?://[^\s]+$", re.IGNORECASE)
 
 # --- strategy selection ("Select" tab): blockcheckw wrapper -------------------

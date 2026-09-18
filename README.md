@@ -15,7 +15,7 @@ single-file **HTML panel** swaps the zapret **strategy** and restarts nfqws.
         +------------------+----------------------------+
                            | egress flows
         +------------------V---------------------------+
-        | DPI      iptables mangle/OUTPUT -> NFQUEUE 200 |
+        | DPI      iptables mangle/OUTPUT -> NFQUEUE 210 |
         |          -> nfqws (strategy) <-- panel:8080    |
         +------------------+----------------------------+
                            |
@@ -32,7 +32,7 @@ single-file **HTML panel** swaps the zapret **strategy** and restarts nfqws.
 - **Access**: Shadowsocks server (`shadowsocks-libev`) and SOCKS5 (`dante`)
   in one container; both TCP and UDP.
 - **DPI**: native `nfqws2` from `bol-van/zapret2` (pinned commit),
-  NFQUEUE 200 for both TCP and UDP, desync of the first N packets per flow,
+  NFQUEUE 210 for TCP (211 reserved for UDP), desync of the first N packets per flow,
   `--fwmark` loop protection, IPv4.
 - **Exit** (switchable live, persists in a docker volume):
   - `direct` — everything leaves via the container default route, desynced.
@@ -94,6 +94,50 @@ Everything lives in `.env` (see `.env.example`). Important variables:
 | `SS_PASSWORD`, `SS_METHOD`, `SOCKS5_LISTEN_PORT`, ... | — | access layer |
 | `UPSTREAM_SOCKS5_*`, `UPSTREAM_SS_*` | — | upstream proxy (for upstream modes) |
 | `WAN_IFACE` | `eth0` | container egress interface |
+
+### Strategy selection (blockcheckw)
+
+The **Strategy selection** tab integrates
+[rcd27/blockcheckw](https://github.com/rcd27/blockcheckw). Rebuild the image
+when upgrading: the Docker build installs the pinned upstream revision,
+its runtime dependencies, and the selection launcher.
+
+1. Set target domains and protocols (HTTP, TLS 1.2, TLS 1.3).
+2. Choose the full upstream strategy corpus or a strategy file accessible
+   **inside the container**. Configure workers, profiles per instance,
+   scan limits and the overall job timeout.
+3. Configure repeated verification passes, probe/identity paths, reference
+   proxy and the minimum share threshold. Keep **Exclude mirage** enabled
+   to exclude upstream results identified as false positives.
+4. Start selection and follow its status and log; cancel if necessary.
+5. Import surviving strategies into the catalog, then apply one from the
+   Strategy tab. Automatic import/application are disabled by default.
+
+The corpus search uses upstream's generated strategies; this is not a
+separate arbitrary Cartesian-grid generator. Parallel probes use upstream's
+SO_MARK implementation. Linux netfilter support and the container's
+NET_ADMIN/NET_RAW capabilities are required; tests of settings and the API
+alone do not verify actual network bypass or eliminate every false positive.
+
+**Scheduler:** enable interval, daily or weekly runs in the tab. Daily/weekly
+times use the container timezone (`TZ`, UTC by default). Save the schedule
+separately from run settings. Scheduling requires the panel to remain running;
+it is not a host cron job. Scheduled runs use the saved effective settings.
+
+**Configuration:** run parameters are available in the panel or as `BCW_*`
+variables; schedule defaults use `BCW_SCHEDULE_*`. The complete list is in
+`.env.example`. Saved panel overrides take precedence over environment defaults
+and persist in the state volume. Reset run settings to use environment defaults
+again. Recreate the container after changing `.env`. Binary/layout paths,
+retention (`BCW_KEEP_RUNS`) and scheduler polling (`BCW_SCHED_TICK`) are deployment
+settings, not live run controls.
+
+**Queue compatibility:** the pinned upstream fixes its selection queue at
+**200**; `BCW_QUEUE` cannot select a different queue. The gateway now defaults
+to TCP **210**, UDP **211**, with the separate Test tab on **202**. Existing
+installations must remove any saved queue configuration that reserves 200 for
+the gateway before running selection. The launcher rejects queue conflicts
+instead of stopping the live gateway.
 
 ### Strategies
 

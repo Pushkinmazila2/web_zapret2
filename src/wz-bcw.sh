@@ -25,7 +25,7 @@
 set -u
 . /opt/webzapret/scripts/wz-common.sh
 
-BCW_MODULE=/opt/webzapret/panel/blockcheck.py
+BCW_MODULE=/opt/webzapret/scripts/blockcheck.py
 BCW_LOG="$WZ_LOG/blockcheck.log"
 BCW_LOCK="$WZ_RUN/bcw.lock"
 BCW_PIDFILE="$WZ_RUN/bcw.pid"
@@ -116,7 +116,7 @@ preflight()
             echo "   ok: NFQUEUE $BCW_QUEUE free for blockcheckw"
         fi
         echo "== preflight $([ "$ok" = 1 ] && echo OK || echo FAILED) =="
-    } | tee -a "$BCW_LOG"
+    }
     return $((1 - ok))
 }
 
@@ -124,7 +124,7 @@ preflight()
 # --check : local sanity, no scan (used by smoke.sh / diagnostics)
 # ---------------------------------------------------------------------------
 if [ "${1:-}" = --check ]; then
-    if preflight >/dev/null 2>&1; then
+    if preflight >>"$BCW_LOG" 2>&1; then
         echo "wz-bcw OK"
         exit 0
     fi
@@ -146,8 +146,10 @@ echo $$ > "$BCW_PIDFILE"
 trap 'rm -f "$BCW_PIDFILE"' EXIT
 log "harness started (settings=$SETTINGS run_dir=$RUN_DIR)"
 
-PF=$(preflight 2>&1)
-if ! preflight >/dev/null 2>&1; then
+if PF=$(preflight 2>&1); then
+    printf '%s\n' "$PF" >>"$BCW_LOG"
+else
+    printf '%s\n' "$PF" >>"$BCW_LOG"
     log "preflight failed"
     emit_err "strategy-selection preflight failed: $(printf '%s\n' "$PF" | grep FAIL | head -n 3 | tr '\n' ' ')"
 fi

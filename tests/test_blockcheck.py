@@ -132,6 +132,41 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(loaded["domains"], ["a.example", "b.example"])
         reset = blockcheck.reset_settings(self.tmp, self.env)
         self.assertEqual(reset["workers"], 32)
+
+
+class PersistenceValidationTests(unittest.TestCase):
+    def test_invalid_updates_do_not_change_saved_files(self):
+        cases = (
+            (blockcheck.save_settings, blockcheck.SETTINGS_FILE,
+             {"workers": 32}, {"domains": ""}),
+            (blockcheck.save_schedule, blockcheck.SCHEDULE_FILE,
+             {"enabled": True, "at": "05:30"}, {"at": "25:99"}),
+        )
+        for save, filename, valid, invalid in cases:
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as tmp:
+                _, _, errors, saved = save(tmp, valid, environ={})
+                self.assertTrue(saved)
+                self.assertEqual(errors, [])
+                path = Path(blockcheck.state_path(tmp, filename))
+                before = path.read_bytes()
+                _, _, errors, saved = save(tmp, invalid, environ={})
+                self.assertFalse(saved)
+                self.assertTrue(errors)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_invalid_first_update_does_not_create_file(self):
+        cases = (
+            (blockcheck.save_settings, blockcheck.SETTINGS_FILE, {"domains": ""}),
+            (blockcheck.save_schedule, blockcheck.SCHEDULE_FILE, {"at": "25:99"}),
+        )
+        for save, filename, invalid in cases:
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as tmp:
+                _, _, errors, saved = save(tmp, invalid, environ={})
+                self.assertFalse(saved)
+                self.assertTrue(errors)
+                self.assertFalse(Path(blockcheck.state_path(tmp, filename)).exists())
+
+
 class CommandLineTests(unittest.TestCase):
     """Requirement 1 + 2: the grid scan and the multithreaded SO_MARK knobs."""
 
