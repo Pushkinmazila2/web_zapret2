@@ -56,5 +56,87 @@ class ScheduleHTTPTests(unittest.TestCase):
                 thread.join(timeout=5)
 
 
+class ImportHTTPTests(unittest.TestCase):
+    """POST /api/bcw/import — regression: bcw_import() lacked a `rows` parameter,
+    so "Import selected" died with TypeError and the plain call with
+    UnboundLocalError."""
+
+    ROW = {"protocol": "HTTPS/TLS1.2", "median_share": 0.9, "passes_ok": 3,
+           "passes_total": 3, "median_latency_ms": 120, "success_rate": 1.0,
+           "admits": ["Good"], "observed": "Bytes", "working": True,
+           "args": "--payload=tls_client_hello --lua-desync=fake:blob=fake_default_tls"}
+
+    def _env(self, tmp):
+        state = Path(tmp) / "state"
+        state.mkdir()
+        catalog = Path(tmp) / "strategies.json"
+        catalog.write_text(json.dumps({"_comment": "keep", "strategies": []}))
+        last = {"ok": True, "run_id": "20260101-000000",
+                "domains": [{"domain": "youtube.com", "block_type": "SNI blocked",
+                             "working": [dict(self.ROW)]}]}
+        (state / blockcheck.LAST_RUN_FILE).write_text(json.dumps(last))
+        return state, catalog
+
+    def _serve(self, state, catalog):
+        patches = [patch.object(panel, "BCW_STATE_DIR", str(state)),
+                   patch.object(panel, "STRATEGIES_FILE", str(catalog)),
+                   patch.object(panel, "WZ_LOG", str(state)),
+                   patch.object(panel, "bcw", blockcheck),
+                   patch.object(panel, "bcw_ready", lambda: (True, "")),
+                   patch.object(panel, "AUTH_USER", "")]
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+        server = panel.ThreadingHTTPServer(("127.0.0.1", 0), panel.Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def stop():
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        self.addCleanup(stop)
+        return server.server_port
+
+    @staticmethod
+    def _post(port, payload):
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        try:
+            connection.request("POST", "/api/bcw/import", json.dumps(payload),
+                               {"Content-Type": "application/json"})
+            response = connection.getresponse()
+            return response.status, json.loads(response.read())
+        finally:
+            connection.close()
+
+    def test_import_selected_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state, catalog = self._env(tmp)
+            port = self._serve(state, catalog)
+            status, body = self._post(port, {"rows": [
+                {"protocol": "HTTPS/TLS1.2", "args": self.ROW["args"]}]})
+            self.assertEqual(status, 200, body)
+            self.assertTrue(body["ok"])
+            saved = json.loads(catalog.read_text())
+            self.assertEqual(saved["_comment"], "keep")
+            self.assertEqual([s["id"] for s in saved["strategies"]], body["ids"])
+            self.assertTrue(saved["strategies"][0]["no_reasm"])
+
+    def test_import_all_working_of_the_last_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state, catalog = self._env(tmp)
+            port = self._serve(state, catalog)
+            status, body = self._post(port, {"protocols": ["tls12"], "limit": 5})
+            self.assertEqual(status, 200, body)
+            self.assertEqual(body["count"], 1)
+
+    def test_import_direct_call_without_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state, catalog = self._env(tmp)
+            self._serve(state, catalog)
+            res = panel.bcw_import(run_id=None)
+            self.assertTrue(res["ok"], res)
+
+
 if __name__ == "__main__":
     unittest.main()

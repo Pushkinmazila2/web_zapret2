@@ -212,6 +212,8 @@ def env_defaults(environ=None, spec=None, prefix=_ENV_PREFIX):
         except ValueError:
             out[key] = default
     return out
+
+
 def _clamp_warning(key, raw, value, spec):
     """Human warning when a numeric value was clamped into its allowed range."""
     try:
@@ -308,6 +310,8 @@ def normalize_schedule(values, base, spec=None):
 
 def valid_hhmm(text):
     return bool(re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", str(text or "").strip()))
+
+
 # ---------------------------------------------------------------------------
 # JSON / state helpers (panel and harness share them)
 # ---------------------------------------------------------------------------
@@ -454,6 +458,8 @@ def schedule_due(schedule, now=None, next_run=None):
 
 def format_local(stamp):
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp)) if stamp else ""
+
+
 # ---------------------------------------------------------------------------
 # command lines (multithreaded SO_MARK probing, embedded mode)
 # ---------------------------------------------------------------------------
@@ -695,6 +701,10 @@ def _needs_no_reasm(args, protocol):
     multi-segment hello hangs the connection forever."""
     if "--filter-tcp=443" in args or "--payload=tls_client_hello" in args:
         return True
+    upper = (protocol or "").upper()
+    return upper.startswith("HTTPS") and "TLS1" in upper
+
+
 def plan_import(result, settings, existing_entries, run_id=""):
     """Catalog entries for the selected strategies of a finished run.
 
@@ -785,8 +795,8 @@ def merge_catalog(catalog, entries):
     data["strategies"] = [s for s in data["strategies"] if str(s.get("id")) not in ids]
     data["strategies"].extend(entries)
     return data
-    upper = (protocol or "").upper()
-    return upper.startswith("HTTPS") and "TLS1" in upper
+
+
 # ---------------------------------------------------------------------------
 # job state (panel) + run orchestration (harness)
 # ---------------------------------------------------------------------------
@@ -850,8 +860,11 @@ def _run_step(cmd, log_path, timeout, env, cwd):
         log.write("\n$ %s\n" % " ".join(cmd))
         log.flush()
         try:
-            proc = subprocess.run(cmd, cwd=cwd, env=env, stdout=log,
-                                  stderr=subprocess.STDOUT, timeout=timeout)
+            # stdin=DEVNULL: `blockcheckw check` reads stdin to EOF when it is
+            # not a terminal (pipe mode) — an inherited open pipe would hang it.
+            proc = subprocess.run(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                                  stdout=log, stderr=subprocess.STDOUT,
+                                  timeout=timeout)
             return proc.returncode, None
         except subprocess.TimeoutExpired:
             log.write("\n!! step timed out after %ss\n" % timeout)

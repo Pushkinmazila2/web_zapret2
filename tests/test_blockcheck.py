@@ -342,6 +342,55 @@ class ImportTests(unittest.TestCase):
         self.assertNotEqual([s for s in catalog["strategies"]
                              if s["id"] == entries[0]["id"]][0]["desc"], "stale")
 
+    def test_no_reasm_falls_back_to_the_protocol(self):
+        """Args without a TLS marker still get reasm protection for HTTPS rows.
+
+        Regression: _needs_no_reasm() had lost its protocol branch (the tail of
+        the function ended up as dead code after merge_catalog)."""
+        self.assertTrue(blockcheck._needs_no_reasm("--lua-desync=fake", "HTTPS/TLS1.2"))
+        self.assertTrue(blockcheck._needs_no_reasm("--lua-desync=fake", "HTTPS/TLS1.3"))
+        self.assertTrue(blockcheck._needs_no_reasm(
+            "--filter-tcp=443 --lua-desync=fake", "whatever"))
+        self.assertFalse(blockcheck._needs_no_reasm("--lua-desync=fake", "HTTP"))
+        self.assertFalse(blockcheck._needs_no_reasm(
+            "--filter-tcp=80 --lua-desync=fake", ""))
+
+    def test_https_row_without_tls_marker_gets_no_reasm(self):
+        rows = [{"protocol": "HTTPS/TLS1.3", "args": "--lua-desync=multisplit:pos=1",
+                 "working": True, "admits": ["Good"]},
+                {"protocol": "HTTP", "args": "--lua-desync=multisplit:pos=method+2",
+                 "working": True, "admits": ["Good"]}]
+        entries, _ = blockcheck.plan_import(
+            {"domains": [{"domain": "d.example", "working": rows}]}, self.settings, [])
+        by_protocol = {e["protocol"]: e for e in entries}
+        self.assertTrue(by_protocol["HTTPS/TLS1.3"].get("no_reasm"))
+        self.assertNotIn("no_reasm", by_protocol["HTTP"])
+
+
+@unittest.skipUnless(os.path.isdir("/proc/self/fd"), "needs procfs")
+class RunStepStdinTests(unittest.TestCase):
+    """blockcheckw's `check` reads stdin to EOF when it is not a terminal; the
+    harness must never hand it an inherited (possibly never-closed) pipe."""
+
+    def test_step_gets_devnull_even_if_our_stdin_is_an_open_pipe(self):
+        import subprocess
+        code = (
+            "import os, sys, tempfile\n"
+            "sys.path.insert(0, %r)\n"
+            "import blockcheck\n"
+            "d = tempfile.mkdtemp()\n"
+            "rc, note = blockcheck._run_step([sys.executable, '-c', "
+            "'import os,sys; sys.exit(0 if os.readlink(\"/proc/self/fd/0\") == \"/dev/null\" else 3)'], "
+            "os.path.join(d, 'x.log'), 20, dict(os.environ), d)\n"
+            "sys.exit(rc)\n" % str(ROOT / "src"))
+        proc = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.PIPE)
+        try:
+            self.assertEqual(proc.wait(timeout=30), 0)
+        finally:
+            proc.stdin.close()
+            if proc.poll() is None:
+                proc.kill()
+
 
 class SchedulerTests(unittest.TestCase):
     """Requirement 4: time-based runs."""
