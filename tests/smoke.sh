@@ -19,7 +19,7 @@ ok()   { echo "   ok: $*"; }
 bad()  { echo "   FAIL: $*" >&2; FAIL=1; }
 
 step "1. binaries"
-for b in /opt/webzapret/bin/nfqws2 /usr/bin/ss-server /usr/sbin/sockd \
+for b in /opt/webzapret/bin/nfqws2 /usr/bin/ss-server /usr/sbin/sockd /usr/bin/tinyproxy \
          /usr/sbin/redsocks /usr/bin/ss-local /opt/webzapret/bin/wz-udprelay; do
     [ -x "$b" ] && ok "$b" || bad "missing executable $b"
 done
@@ -31,7 +31,7 @@ for lua in zapret-lib.lua zapret-antidpi.lua zapret-auto.lua; do
 done
 
 step "2. services up"
-for s in ss-server sockd nfqws; do
+for s in ss-server sockd tinyproxy nfqws; do
     if [ -f "/run/webzapret/$s.pid" ] && kill -0 "$(cat /run/webzapret/$s.pid)" 2>/dev/null; then
         ok "$s (pid $(cat /run/webzapret/$s.pid))"
     else
@@ -39,8 +39,8 @@ for s in ss-server sockd nfqws; do
     fi
 done
 
-step "3. listeners (defaults: ss 8388, socks 1080, panel 8080)"
-for port in 8388 1080; do
+step "3. listeners (defaults: ss 8388, socks 1080, http 8888, panel 8080)"
+for port in 8388 1080 8888; do
     if (command -v nc >/dev/null && nc -z 127.0.0.1 "$port"); then
         ok "listening on $port"
     elif [ "$(ss -lnt 2>/dev/null | awk -v p=":$port " '$4 ~ p' | wc -l)" -gt 0 ]; then

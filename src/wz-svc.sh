@@ -16,7 +16,7 @@ exec 9>&- 2>/dev/null || true
 EXIT_MODE=$(active_exit_mode)
 compute_upstream
 
-SERVICES="ss-server sockd nfqws redsocks ss-local udprelay"
+SERVICES="ss-server sockd tinyproxy nfqws redsocks ss-local udprelay"
 
 # ---------------------------------------------------------------------------
 # config rendering (templates live in /opt/webzapret/config)
@@ -68,6 +68,17 @@ render_sockd_conf()
         /opt/webzapret/config/sockd.conf
 }
 
+render_tinyproxy_conf()
+{
+    local auth=""
+    if [ -n "${HTTP_USER:-}" ] && [ -n "${HTTP_PASSWORD:-}" ]; then
+        auth="BasicAuth $HTTP_USER $HTTP_PASSWORD"
+    fi
+    sed -e "s/__HTTP_PORT__/$HTTP_LISTEN_PORT/g" \
+        -e "s|__AUTH__|$auth|g" \
+        /opt/webzapret/config/tinyproxy.conf
+}
+
 render_redsocks_conf()
 {
     # $1 - upstream ip, $2 - upstream port, $3 - user, $4 - password
@@ -99,6 +110,7 @@ render_all()
     log_module svc "rendering configs to $WZ_CFG (exit_mode=$EXIT_MODE)"
     render_ss_server_json > "$WZ_CFG/ss-server.json"
     render_sockd_conf > "$WZ_CFG/sockd.conf"
+    render_tinyproxy_conf > "$WZ_CFG/tinyproxy.conf"
 
     # upstream configs (only meaningful in upstream modes)
     case "$(active_exit_mode)" in
@@ -215,6 +227,23 @@ start_sockd()
     spawn_svc sockd "" "$bin" -f /etc/sockd.conf
 }
 
+start_tinyproxy()
+{
+    local bin
+    bin=$(command -v tinyproxy 2>/dev/null || true)
+    [ -n "$bin" ] || for c in /usr/bin/tinyproxy /usr/sbin/tinyproxy; do
+        [ -x "$c" ] && { bin=$c; break; }
+    done
+    if [ -z "$bin" ]; then
+        log_err tinyproxy "tinyproxy binary not found — is the tinyproxy package installed?"
+        return 1
+    fi
+    log_module tinyproxy "using binary: $bin"
+
+    render_tinyproxy_conf > "$WZ_CFG/tinyproxy.conf"
+    spawn_svc tinyproxy "" "$bin" -d -c "$WZ_CFG/tinyproxy.conf"
+}
+
 
 
 start_redsocks()
@@ -295,7 +324,7 @@ start_one()
     case "$1" in
         ss-server) fn=start_ss_server ;;
         ss-local)  fn=start_ss_local ;;
-        sockd|nfqws|redsocks|udprelay) fn=start_$1 ;;
+        sockd|tinyproxy|nfqws|redsocks|udprelay) fn=start_$1 ;;
         *) log_err svc "unknown service '$1'"; return 2 ;;
     esac
     $fn
@@ -305,7 +334,7 @@ cmd_start()
 {
     log_module svc "starting all services"
     local s
-    for s in ss-server sockd; do start_one "$s"; done
+    for s in ss-server sockd tinyproxy; do start_one "$s"; done
     # exit layer + nfqws
     for s in redsocks ss-local udprelay nfqws; do start_one "$s"; done
 }
@@ -314,7 +343,7 @@ cmd_stop()
 {
     log_module svc "stopping all services"
     local s
-    for s in nfqws udprelay ss-local redsocks sockd ss-server; do stop_svc "$s"; done
+    for s in nfqws udprelay ss-local redsocks tinyproxy sockd ss-server; do stop_svc "$s"; done
 }
 
 cmd_status()

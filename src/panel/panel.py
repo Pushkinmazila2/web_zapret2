@@ -54,7 +54,7 @@ WZ_RUN = "/run/webzapret"
 WZ_LOG = "/var/log/webzapret"
 WZ_STATE = "/opt/webzapret/state"
 
-SERVICES = ["ss-server", "sockd", "nfqws", "redsocks", "ss-local", "udprelay"]
+SERVICES = ["ss-server", "sockd", "tinyproxy", "nfqws", "redsocks", "ss-local", "udprelay"]
 STRATEGIES_FILE = os.path.join(WZ_SRC, "config/strategies.json")
 APPLY = "/opt/webzapret/scripts/wz-apply.sh"
 HTTPD_HOST = os.environ.get("PANEL_BIND", "0.0.0.0")
@@ -94,6 +94,9 @@ except ImportError:
 # --- access layer endpoints (used to build client connection strings) --------
 SS_LISTEN_PORT = int(os.environ.get("SS_LISTEN_PORT", "8388") or 8388)
 SOCKS5_LISTEN_PORT = int(os.environ.get("SOCKS5_LISTEN_PORT", "1080") or 1080)
+HTTP_LISTEN_PORT = int(os.environ.get("HTTP_LISTEN_PORT", "8888") or 8888)
+HTTP_USER = os.environ.get("HTTP_USER", "").strip()
+HTTP_PASSWORD = os.environ.get("HTTP_PASSWORD", "").strip()
 SS_PASSWORD = os.environ.get("SS_PASSWORD", "change-me")
 SS_METHOD = os.environ.get("SS_METHOD", "aes-256-gcm")
 # Public address clients use to reach this gateway; empty => auto-detect.
@@ -187,7 +190,7 @@ def apply(args):
 
 
 _TS_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]")
-LOG_MODULES = ["actions", "ss-server", "sockd", "nfqws", "redsocks", "ss-local",
+LOG_MODULES = ["actions", "ss-server", "sockd", "tinyproxy", "nfqws", "redsocks", "ss-local",
                "udprelay", "panel", "test", "bcw"]
 
 
@@ -353,6 +356,8 @@ def connected_devices():
         port_svc[SS_LISTEN_PORT] = "ss-server"
     if SOCKS5_LISTEN_PORT:
         port_svc[SOCKS5_LISTEN_PORT] = "sockd"
+    if HTTP_LISTEN_PORT:
+        port_svc[HTTP_LISTEN_PORT] = "tinyproxy"
     per_service = {v: set() for v in port_svc.values()}
     for path in ("/proc/net/tcp", "/proc/net/tcp6"):
         try:
@@ -1069,6 +1074,10 @@ def status():
                 "uri": ss_uri(host) if host else "",
             },
             "socks5": {"port": SOCKS5_LISTEN_PORT, "auth": "none"},
+            "http": {
+                "port": HTTP_LISTEN_PORT,
+                "auth": "basic" if (HTTP_USER and HTTP_PASSWORD) else "none",
+            },
         },
     }
 

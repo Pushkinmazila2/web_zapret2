@@ -54,7 +54,7 @@ button[disabled] { opacity:.55; cursor:default; }
 <div class="card">
   <label>Connection &mdash; client access</label>
   <p class="status">Devices connected (unique IPs, TCP): <b id="dev-count">?</b>
-     &middot; ss-server: <span id="dev-ss">0</span> &middot; sockd: <span id="dev-socks">0</span></p>
+     &middot; ss-server: <span id="dev-ss">0</span> &middot; sockd: <span id="dev-socks">0</span> &middot; tinyproxy: <span id="dev-http">0</span></p>
   <p class="status">Traffic via nfqws: <span id="traffic-in">0</span> in &middot; <span id="traffic-out">0</span> out &middot; <span id="traffic-total">0</span> total</p>
   <table>
     <thead><tr><th>ingress</th><th>address</th><th>auth / method</th><th></th></tr></thead>
@@ -282,7 +282,7 @@ button[disabled] { opacity:.55; cursor:default; }
     <span>src</span>
     <select id="log-src" style="padding:4px 8px; background:#121a26; color:var(--fg); border:1px solid #33455b;">
       <option selected>all</option><option>actions</option>
-      <option>nfqws</option><option>ss-server</option><option>sockd</option>
+      <option>nfqws</option><option>ss-server</option><option>sockd</option><option>tinyproxy</option>
       <option>redsocks</option><option>ss-local</option><option>udprelay</option><option>panel</option><option>test</option>
     </select>
     <button id="export-log">export all logs (.log)</button>
@@ -395,6 +395,7 @@ function renderConnect(c, d) {
   $('#dev-count').textContent = (typeof d.count === 'number') ? d.count : '?';
   $('#dev-ss').textContent = (d.per_service && d.per_service['ss-server']) || 0;
   $('#dev-socks').textContent = (d.per_service && d.per_service['sockd']) || 0;
+  $('#dev-http').textContent = (d.per_service && d.per_service['tinyproxy']) || 0;
   const host = c.host || 'NOT-DETECTED (set PUBLIC_HOST in .env)';
   const rows = [];
   if (c.ss) {
@@ -406,6 +407,11 @@ function renderConnect(c, d) {
     rows.push('<tr><td>SOCKS5</td><td class="mono">' + esc(host + ':' + c.socks5.port) +
       '</td><td class="mono">none</td>' +
       '<td><button data-copy="' + esc(host + ':' + c.socks5.port) + '">copy host:port</button></td></tr>');
+  }
+  if (c.http) {
+    rows.push('<tr><td>HTTP proxy</td><td class="mono">' + esc(host + ':' + c.http.port) +
+      '</td><td class="mono">' + esc(c.http.auth) + '</td>' +
+      '<td><button data-copy="' + esc(host + ':' + c.http.port) + '">copy host:port</button></td></tr>');
   }
   $('#conn-rows').innerHTML = rows.join('');
   $('#ss-uri').textContent = (c.ss && c.ss.uri) || '';
