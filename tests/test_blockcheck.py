@@ -184,6 +184,13 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("scan") + 1], "-d")
         self.assertNotIn("--from-file", argv)
 
+    def test_scan_does_not_use_dash_o(self):
+        """Regression: upstream `scan -o` writes a plain strategies list (and
+        nothing at all for an unblocked domain) — the JSON report is on stdout."""
+        argv = blockcheck.scan_argv(self.settings, "youtube.com", "/run/scan.json")
+        self.assertNotIn("-o", argv)
+        self.assertNotIn("/run/scan.json", argv)
+
     def test_scan_from_file_uses_a_custom_corpus(self):
         settings, _, _ = blockcheck.normalize(
             {"grid": "file", "grid_file": "/data/corpus.txt"}, self.settings)
@@ -342,6 +349,88 @@ class ImportTests(unittest.TestCase):
         self.assertNotEqual([s for s in catalog["strategies"]
                              if s["id"] == entries[0]["id"]][0]["desc"], "stale")
 
+    def test_no_reasm_falls_back_to_the_protocol(self):
+        """Args without a TLS marker still get reasm protection for HTTPS rows.
+
+        Regression: _needs_no_reasm() had lost its protocol branch (the tail of
+        the function ended up as dead code after merge_catalog)."""
+        self.assertTrue(blockcheck._needs_no_reasm("--lua-desync=fake", "HTTPS/TLS1.2"))
+        self.assertTrue(blockcheck._needs_no_reasm("--lua-desync=fake", "HTTPS/TLS1.3"))
+        self.assertTrue(blockcheck._needs_no_reasm(
+            "--filter-tcp=443 --lua-desync=fake", "whatever"))
+        self.assertFalse(blockcheck._needs_no_reasm("--lua-desync=fake", "HTTP"))
+        self.assertFalse(blockcheck._needs_no_reasm(
+            "--filter-tcp=80 --lua-desync=fake", ""))
+
+    def test_https_row_without_tls_marker_gets_no_reasm(self):
+        rows = [{"protocol": "HTTPS/TLS1.3", "args": "--lua-desync=multisplit:pos=1",
+                 "working": True, "admits": ["Good"]},
+                {"protocol": "HTTP", "args": "--lua-desync=multisplit:pos=method+2",
+                 "working": True, "admits": ["Good"]}]
+        entries, _ = blockcheck.plan_import(
+            {"domains": [{"domain": "d.example", "working": rows}]}, self.settings, [])
+        by_protocol = {e["protocol"]: e for e in entries}
+        self.assertTrue(by_protocol["HTTPS/TLS1.3"].get("no_reasm"))
+        self.assertNotIn("no_reasm", by_protocol["HTTP"])
+
+
+class ScanStdoutCaptureTests(unittest.TestCase):
+    """The scan JSON is taken from the step's stdout; stderr stays in the log."""
+
+    def test_stdout_goes_to_file_stderr_to_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log, out = os.path.join(tmp, "x.log"), os.path.join(tmp, "scan.json")
+            code = ("import sys; print('{\"strategies\": []}'); "
+                    "print('progress noise', file=sys.stderr)")
+            rc, note = blockcheck._run_step([sys.executable, "-c", code], log, 20,
+                                            dict(os.environ), tmp, stdout_path=out)
+            self.assertEqual((rc, note), (0, None))
+            self.assertEqual(blockcheck.read_report(out), {"strategies": []})
+            self.assertIn("progress noise", Path(log).read_text())
+            self.assertFalse(any(line.startswith("{")
+                                 for line in Path(log).read_text().splitlines()))
+
+    def test_read_report_tolerates_stray_text_and_garbage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "r.json")
+            Path(path).write_text('warn: something\n{"strategies": [], "total": 3}\n')
+            self.assertEqual(blockcheck.read_report(path)["total"], 3)
+            Path(path).write_text("# blockcheckw scan results\n--lua-desync=fake\n")
+            self.assertIsNone(blockcheck.read_report(path))
+            self.assertIsNone(blockcheck.read_report(os.path.join(tmp, "missing")))
+
+    def test_unblocked_domain_report_is_not_an_error(self):
+        report = {"domain": "d.example", "block_type": "not_blocked", "blocked": [],
+                  "total": 0, "working": 0, "strategies": []}
+        parsed = blockcheck.parse_scan_report(report)
+        self.assertEqual(parsed["block_type"], "not_blocked")
+        self.assertEqual(parsed["strategies"], [])
+
+
+@unittest.skipUnless(os.path.isdir("/proc/self/fd"), "needs procfs")
+class RunStepStdinTests(unittest.TestCase):
+    """blockcheckw's `check` reads stdin to EOF when it is not a terminal; the
+    harness must never hand it an inherited (possibly never-closed) pipe."""
+
+    def test_step_gets_devnull_even_if_our_stdin_is_an_open_pipe(self):
+        import subprocess
+        code = (
+            "import os, sys, tempfile\n"
+            "sys.path.insert(0, %r)\n"
+            "import blockcheck\n"
+            "d = tempfile.mkdtemp()\n"
+            "rc, note = blockcheck._run_step([sys.executable, '-c', "
+            "'import os,sys; sys.exit(0 if os.readlink(\"/proc/self/fd/0\") == \"/dev/null\" else 3)'], "
+            "os.path.join(d, 'x.log'), 20, dict(os.environ), d)\n"
+            "sys.exit(rc)\n" % str(ROOT / "src"))
+        proc = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.PIPE)
+        try:
+            self.assertEqual(proc.wait(timeout=30), 0)
+        finally:
+            proc.stdin.close()
+            if proc.poll() is None:
+                proc.kill()
+
 
 class SchedulerTests(unittest.TestCase):
     """Requirement 4: time-based runs."""
@@ -420,13 +509,19 @@ class RunTests(unittest.TestCase):
         self.addCleanup(lambda: setattr(blockcheck, "_run_step", real))
 
     def _stub(self, scan_report=SCAN_REPORT, check_report=CHECK_REPORT, rc=0):
-        def fake(cmd, log_path, timeout, env, cwd):
+        def fake(cmd, log_path, timeout, env, cwd, stdout_path=None):
             self.calls.append({"cmd": list(cmd), "env": dict(env), "cwd": cwd,
-                               "timeout": timeout})
+                               "timeout": timeout, "stdout_path": stdout_path})
             with open(log_path, "a", encoding="utf-8") as log:
                 log.write("fake run: %s\n" % " ".join(cmd))
-            path = cmd[cmd.index("-o") + 1]
-            report = check_report if "--from-file" in cmd else scan_report
+            # Like real blockcheckw: `check -o` writes its JSON report to the
+            # file, while `scan` prints its JSON report on STDOUT (its `-o` would
+            # produce a plain strategies list instead).
+            if "--from-file" in cmd:
+                path, report = cmd[cmd.index("-o") + 1], check_report
+            else:
+                self.assertNotIn("-o", cmd)
+                path, report = stdout_path, scan_report
             with open(path, "w", encoding="utf-8") as handle:
                 json.dump(report, handle)
             return rc, None
