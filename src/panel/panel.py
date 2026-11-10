@@ -880,11 +880,16 @@ def _bcw_collect(proc, job):
             res = {}
     if not isinstance(res, dict) or not res:
         res = bcw.read_json(os.path.join(job["run_dir"], "result.json"), {}) or {}
-    state = "done" if res.get("ok") else "error"
-    job = dict(job, state=state, rc=rc,
+    # A run that only produced errors (no working strategy) is a failure, not "done".
+    failed = (not res.get("ok")) or (bool(res.get("errors")) and not res.get("success"))
+    error = res.get("error") or "; ".join(res.get("errors") or [])
+    if failed and not error:
+        error = "harness produced no result (rc=%s) - see blockcheck.log" % rc
+    job = dict(job, state="error" if failed else "done", rc=rc, error=error[:600],
                finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     bcw.save_job(BCW_STATE_DIR, job)
-    if res.get("ok"):
+    if res.get("domains") is not None:
+        # always keep the newest result: a stale older run must not mask a failure
         bcw.write_json(bcw.state_path(BCW_STATE_DIR, bcw.LAST_RUN_FILE), res)
     try:
         bcw.prune_runs(BCW_RUNS_DIR, BCW_KEEP_RUNS)

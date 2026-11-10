@@ -573,6 +573,185 @@ class RunTests(unittest.TestCase):
         self.assertEqual(len(catalog["strategies"]), 3)
 
 
+def _noisy_stdout(trials=3000, report=None):
+    """What a real `blockcheckw scan` prints on stdout: a header + verdict line per
+    tested strategy, then the pretty-printed JSON report."""
+    lines = []
+    for n in range(trials):
+        lines.append("- curl_test_https_tls12 ipv4 youtube.com : nfqws2 --bad%d" % n)
+        lines.append("curl: (28) Connection timed out")
+    lines.append("- curl_test_https_tls12 ipv4 youtube.com : nfqws2 --good")
+    lines.append("!!!!! AVAILABLE !!!!!")
+    lines.append(json.dumps(report or SCAN_REPORT, indent=2))
+    lines.append("")
+    lines.append(">>> Next step: sudo blockcheckw check --from-file x <<<")
+    return "\n".join(lines) + "\n"
+
+
+class NoisyScanReportTests(unittest.TestCase):
+    """Regression: the scan report lives at the END of a very noisy stdout."""
+
+    def test_read_report_takes_the_last_object_after_thousands_of_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "scan.json")
+            Path(path).write_text(_noisy_stdout(), encoding="utf-8")
+            data = blockcheck.read_report(path)
+            self.assertEqual(data["domain"], "youtube.com")
+            self.assertTrue(blockcheck.parse_scan_report(data)["strategies"])
+
+    def test_a_broken_brace_line_in_the_noise_does_not_hide_the_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "scan.json")
+            Path(path).write_text("{ not json at all\n" + _noisy_stdout(5),
+                                  encoding="utf-8")
+            self.assertEqual(blockcheck.read_report(path)["domain"], "youtube.com")
+
+
+class ScanReportLocationTests(unittest.TestCase):
+    """run() must find the report even when the stdout capture is unusable, and
+    must say WHY when nothing is readable."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="wz-bcw-loc-")
+        self.settings, _, _ = blockcheck.normalize({}, blockcheck.env_defaults({}))
+        real = blockcheck._run_step
+        self.addCleanup(lambda: setattr(blockcheck, "_run_step", real))
+
+    def _stub(self, stdout_text, dated_report=None):
+        def fake(cmd, log_path, timeout, env, cwd, stdout_path=None):
+            if "--from-file" in cmd:               # check
+                with open(cmd[cmd.index("-o") + 1], "w", encoding="utf-8") as handle:
+                    json.dump(CHECK_REPORT, handle)
+                return 0, None
+            Path(stdout_path).write_text(stdout_text, encoding="utf-8")
+            if dated_report is not None:           # blockcheckw always drops this
+                Path(cwd, "2026-10-31_15-39_scan.json").write_text(
+                    json.dumps(dated_report), encoding="utf-8")
+            return 0, None
+        return fake
+
+    def test_falls_back_to_the_dated_scan_json(self):
+        blockcheck._run_step = self._stub("garbage, no json here\n", SCAN_REPORT)
+        result = blockcheck.run(self.settings, self.tmp)
+        self.assertEqual(result["errors"], [])
+        self.assertTrue(result["success"])
+        self.assertEqual(result["domains"][0]["block_type"], "SNI blocked")
+        self.assertIn("2026-10-31_15-39_scan.json", result["log"])
+
+    def test_noisy_stdout_alone_is_enough(self):
+        blockcheck._run_step = self._stub(_noisy_stdout())
+        result = blockcheck.run(self.settings, self.tmp)
+        self.assertEqual(result["errors"], [])
+        self.assertTrue(result["ok"])
+
+    def test_unreadable_report_error_explains_itself(self):
+        blockcheck._run_step = self._stub("# blockcheckw scan results\n--lua-desync=x\n")
+        result = blockcheck.run(self.settings, self.tmp)
+        self.assertFalse(result["success"])
+        message = result["errors"][0]
+        self.assertIn("no readable report", message)
+        self.assertIn("bytes", message)
+        self.assertIn("blockcheckw scan results", message)
+
+    def test_unblocked_domain_is_a_clean_result(self):
+        report = {"domain": "d.example", "block_type": "not_blocked", "blocked": [],
+                  "total": 0, "working": 0, "strategies": []}
+        blockcheck._run_step = self._stub("All protocols are available\n"
+                                          + json.dumps(report, indent=2) + "\n")
+        result = blockcheck.run(self.settings, self.tmp)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["domains"][0]["block_type"], "not_blocked")
+
+
+class TrialFilterTests(unittest.TestCase):
+    def feed_all(self, lines):
+        flt = blockcheck._TrialFilter()
+        out = []
+        for line in lines:
+            out += flt.feed(line)
+        return out + flt.finish()
+
+    def test_failed_trials_are_dropped_available_and_errors_kept(self):
+        out = self.feed_all([
+            "- curl_test_https_tls12 ipv4 a.example : nfqws2 --bad",
+            "curl: (28) timeout",
+            "- curl_test_https_tls12 ipv4 a.example : nfqws2 --good",
+            "!!!!! AVAILABLE !!!!!",
+            "- curl_test_https_tls12 ipv4 a.example : nfqws2 --broken",
+            "ERROR: nfqws2 died",
+            "Baseline: HTTPS/TLS1.2 blocked"])
+        text = "\n".join(out)
+        self.assertNotIn("--bad", text)
+        self.assertIn("--good", text)
+        self.assertIn("--broken", text)
+        self.assertIn("Baseline: HTTPS/TLS1.2 blocked", text)
+        self.assertIn("3 strategies tested, 1 available (finished)", text)
+
+    def test_progress_is_periodic_and_bounded(self):
+        lines = []
+        for n in range(1200):
+            lines += ["- curl_test_https_tls12 ipv4 a.example : nfqws2 --x%d" % n, "fail"]
+        out = self.feed_all(lines)
+        self.assertEqual(len([l for l in out if l.startswith("progress:")]), 3)
+        self.assertLess(len(out), 10)
+
+    def test_final_json_report_is_not_echoed(self):
+        out = self.feed_all(["scan done", "{", '  "domain": "a.example",', "  ]", "}",
+                             "after", '{"compact": true}', "end"])
+        self.assertEqual(out, ["scan done", "after", "end"])
+
+
+class RunStepStreamingTests(unittest.TestCase):
+    def test_live_output_reaches_log_and_container_stderr_filtered(self):
+        import subprocess
+        code = (
+            "import os, sys, tempfile\n"
+            "sys.path.insert(0, %r)\n"
+            "import blockcheck\n"
+            "d = tempfile.mkdtemp()\n"
+            "child = 'import sys\\nfor i in range(3):\\n print(\"- curl_test_https_tls12 ipv4 y.com : nfqws2 --bad%%d\" %% i); print(\"nope\")\\n"
+            "print(\"- curl_test_https_tls12 ipv4 y.com : nfqws2 --good\"); print(\"!!!!! AVAILABLE !!!!!\")\\n"
+            "print(\"{\\\\n  \\\\\"strategies\\\\\": []\\\\n}\")\\nprint(\"stderr says hi\", file=sys.stderr)'\n"
+            "log, out = os.path.join(d, 'l.log'), os.path.join(d, 'o.txt')\n"
+            "rc, note = blockcheck._run_step([sys.executable, '-c', child], log, 30, dict(os.environ), d, stdout_path=out)\n"
+            "print('RC', rc, note)\n"
+            "print('LOG<<' + open(log).read() + '>>')\n"
+            "print('OUT<<' + open(out).read() + '>>')\n" % str(ROOT / "src"))
+        proc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=60)
+        self.assertIn("RC 0 None", proc.stdout, proc.stderr)
+        log = proc.stdout.split("LOG<<", 1)[1].split(">>", 1)[0]
+        raw = proc.stdout.split("OUT<<", 1)[1].split(">>", 1)[0]
+        # run log: failed trials condensed away, hits + child's stderr kept
+        self.assertIn("--good", log)
+        self.assertNotRegex(log, r"--bad\d")     # (the echoed command has "--bad%d")
+        self.assertIn("stderr says hi", log)
+        # the raw stdout capture keeps EVERYTHING (the JSON report is parsed from it)
+        self.assertIn("--bad2", raw)
+        self.assertIn('"strategies"', raw)
+        # container log: same filtered view with the harness' [ts] [bcw] prefix
+        self.assertRegex(proc.stderr, r"\[\d{4}-\d\d-\d\dT[\d:]+Z\] \[bcw\] .*--good")
+        self.assertNotRegex(proc.stderr, r"--bad\d")
+
+    def test_timeout_is_reported_and_the_step_stopped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            started = time.time()
+            rc, note = blockcheck._run_step(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                os.path.join(tmp, "l.log"), 1, dict(os.environ), tmp)
+            self.assertEqual(rc, 124)
+            self.assertIn("timeout", note)
+            self.assertLess(time.time() - started, 30)
+
+    def test_missing_binary_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, note = blockcheck._run_step(["/nonexistent/blockcheckw"],
+                                            os.path.join(tmp, "l.log"), 5,
+                                            dict(os.environ), tmp)
+            self.assertEqual(rc, 127)
+            self.assertTrue(note)
+
+
 class CliTests(unittest.TestCase):
     def test_defaults_command_prints_both_blocks(self):
         buf = io.StringIO()

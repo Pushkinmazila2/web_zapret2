@@ -6,7 +6,7 @@
 <title>web_zapret2 &mdash; panel</title>
 <style>
 :root { --bg:#0f1622; --card:#17202e; --fg:#e6edf3; --mut:#8b96a3; --acc:#4f9cf9;
-        --ok:#3fb950; --bad:#f85149; --mono:ui-monospace,Consolas,monospace; }
+        --ok:#3fb950; --bad:#f85149; --warn:#f0883e; --mono:ui-monospace,Consolas,monospace; }
 * { box-sizing:border-box; }
 body { background:var(--bg); color:var(--fg); font:14px/1.45 system-ui,sans-serif;
        margin:0; padding:24px; }
@@ -704,10 +704,14 @@ function bcwRenderLast(last) {
   const body = $('#bcw-rows');
   body.innerHTML = '';
   if (!last) { $('#bcw-last-summary').textContent = 'no runs yet'; return; }
+  const errs = last.errors || [];
   $('#bcw-last-summary').innerHTML =
     (last.success ? '<b style="color:var(--ok)">working strategies found</b>'
-                  : '<b style="color:var(--bad)">no working strategy</b>')
-    + ' &middot; run ' + esc(last.run_id || '') + ' &middot; ' + esc(last.summary || '');
+       : errs.length ? '<b style="color:var(--bad)">run finished with errors</b>'
+       : '<b style="color:var(--warn)">no working strategy</b>')
+    + ' &middot; run ' + esc(last.run_id || '') + ' &middot; ' + esc(last.summary || '')
+    + (errs.length ? '<br><span style="color:var(--bad)">'
+       + errs.map(esc).join('<br>') + '</span>' : '');
   (last.domains || []).forEach(d => {
     (d.working || []).forEach(r => {
       const share = (r.median_share === null || r.median_share === undefined)
@@ -738,13 +742,18 @@ async function loadBcw() {
       + esc(o.settings_errors.join('; ')) + '</span>';
   }
   const job = o.job || {};
+  const jobColors = { running: 'var(--warn)', cancelling: 'var(--warn)',
+                      done: 'var(--ok)', error: 'var(--bad)', lost: 'var(--bad)' };
   $('#bcw-job').innerHTML = job.state
-    ? 'job: <b>' + esc(job.state) + '</b>'
+    ? 'job: <b style="color:' + (jobColors[job.state] || 'inherit') + '">'
+      + esc(job.state) + '</b>'
       + (job.run_id ? ' &middot; run ' + esc(job.run_id) : '')
       + (job.source ? ' &middot; ' + esc(job.source) : '')
       + (job.started_at ? ' &middot; since ' + esc(job.started_at) : '')
       + (job.rc !== null && job.rc !== undefined && job.state !== 'running'
-         ? ' &middot; rc=' + esc(job.rc) : '')
+         ? ' &middot; rc=' + esc(String(job.rc)) : '')
+      + (job.error && job.state !== 'running'
+         ? '<br><span style="color:var(--bad)">' + esc(job.error) + '</span>' : '')
     : 'job: idle';
   $('#bcw-cancel').disabled = !(job.state === 'running' || job.state === 'cancelling');
   const sch = o.schedule || {};
