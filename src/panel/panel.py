@@ -844,8 +844,11 @@ def bcw_start_run(overrides=None, source="manual"):
                "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         bcw.save_job(BCW_STATE_DIR, job)
         try:
+            # stdin=DEVNULL: blockcheckw's `check` slurps stdin to EOF whenever it
+            # is not a terminal (pipe mode); an inherited open pipe would hang it.
             proc = subprocess.Popen(
                 [WZ_BCW, "run", settings_file, run_dir],
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 start_new_session=True)
         except OSError as exc:
@@ -929,9 +932,12 @@ def bcw_cancel():
     return {"ok": True, "run_id": job.get("run_id")}
 
 
-def bcw_import(run_id=None, protocols=None, limit=None):
+def bcw_import(run_id=None, protocols=None, limit=None, rows=None):
     """Import the selected (false-positive-filtered) strategies of a finished
-    run into the live catalog.  Returns the created catalog entries."""
+    run into the live catalog.  Returns the created catalog entries.
+
+    `rows` is an explicit selection from the UI ("Import selected": a list of
+    {protocol, args} pairs); without it every working row of the run qualifies."""
     ready, error = bcw_ready()
     if not ready:
         return {"ok": False, "error": error}
