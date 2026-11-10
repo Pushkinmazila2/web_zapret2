@@ -479,11 +479,16 @@ def _globals(settings, workers=None):
 
 
 def scan_argv(settings, domain, scan_out):
-    """`scan` — the full strategy grid for one domain (candidates JSON)."""
+    """`scan` — the full strategy grid for one domain.
+
+    The structured JSON report is printed on STDOUT (everything else goes to
+    stderr when there is no TTY); run() captures it into `scan_out`.  Do NOT pass
+    `-o`: upstream then writes a plain "# protocol" + args list there (nothing at
+    all when the domain is not blocked), which `check` cannot use as a report."""
     args = _globals(settings, workers=int(settings["workers"]))
     args += ["scan", "-d", domain, "-p", ",".join(settings["protocols"]),
              "--dns", settings["dns"], "--timeout", str(int(settings["scan_timeout"])),
-             "--top", str(int(settings["scan_top"])), "-o", scan_out]
+             "--top", str(int(settings["scan_top"]))]
     if settings.get("alive_via"):
         args += ["--alive-via", settings["alive_via"]]
     if settings.get("grid") == "file" and settings.get("grid_file"):
@@ -616,8 +621,26 @@ def parse_check_report(data):
 
 
 def read_report(path):
-    """Read a scan/check report from disk (None when missing/unreadable)."""
-    return read_json(path)
+    """Read a scan/check report from disk (None when missing/unreadable).
+
+    Tolerates stray text around the JSON object (a captured stdout may carry a
+    leading log line): the first complete object wins."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except OSError:
+        return None
+    try:
+        return json.loads(text)
+    except ValueError:
+        pass
+    start = text.find("{")
+    if start < 0:
+        return None
+    try:
+        return json.JSONDecoder().raw_decode(text[start:])[0]
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -854,16 +877,27 @@ def prune_runs(runs_dir, keep=10):
     return removed
 
 
-def _run_step(cmd, log_path, timeout, env, cwd):
-    """Run one blockcheckw step, streaming its output into log_path."""
+def _run_step(cmd, log_path, timeout, env, cwd, stdout_path=None):
+    """Run one blockcheckw step, streaming its output into log_path.
+
+    With `stdout_path` the step's STDOUT goes to that file instead (used for
+    `scan`, whose JSON report is printed there); stderr always goes to the log."""
     with open(log_path, "a", encoding="utf-8", errors="replace") as log:
         log.write("\n$ %s\n" % " ".join(cmd))
         log.flush()
+        out = None
+        try:
+            if stdout_path:
+                out = open(stdout_path, "w", encoding="utf-8")
+        except OSError as exc:
+            log.write("\n!! cannot open %s: %s\n" % (stdout_path, exc))
+            return 127, str(exc)
         try:
             # stdin=DEVNULL: `blockcheckw check` reads stdin to EOF when it is
             # not a terminal (pipe mode) — an inherited open pipe would hang it.
             proc = subprocess.run(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                                  stdout=log, stderr=subprocess.STDOUT,
+                                  stdout=out if out is not None else log,
+                                  stderr=log if out is not None else subprocess.STDOUT,
                                   timeout=timeout)
             return proc.returncode, None
         except subprocess.TimeoutExpired:
@@ -872,6 +906,9 @@ def _run_step(cmd, log_path, timeout, env, cwd):
         except OSError as exc:
             log.write("\n!! cannot run %s: %s\n" % (cmd[0], exc))
             return 127, str(exc)
+        finally:
+            if out is not None:
+                out.close()
 
 
 def run(settings, run_dir, log_path=None, environ=None):
@@ -912,7 +949,8 @@ def run(settings, run_dir, log_path=None, environ=None):
                "inconclusive": False, "working": [], "refused": [],
                "scan": None, "check": None}
         budget = max(5, deadline - time.time())
-        rc, note = _run_step(item["scan"], log_path, budget, env, run_dir)
+        rc, note = _run_step(item["scan"], log_path, budget, env, run_dir,
+                              stdout_path=item["scan_out"])
         dom["scan_rc"] = rc
         if rc != 0:
             result["errors"].append("%s: scan failed (rc=%s%s)" % (
