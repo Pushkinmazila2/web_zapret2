@@ -1,18 +1,18 @@
 # web_zapret2
 
 Stage 1 — an **isolated, containerized gateway** built on **zapret2**.
-It accepts **TCP/UDP** traffic via **Shadowsocks** and **SOCKS5**, pushes it
+It accepts **TCP/UDP** traffic via **Shadowsocks**, **SOCKS5**, and **HTTP proxy** (Tinyproxy), pushes it
 through **NFQWS2** (DPI desync), and then egresses either **directly** to the
 internet or through an **upstream Shadowsocks / SOCKS5 proxy**. A lightweight
 single-file **HTML panel** swaps the zapret **strategy** and restarts nfqws.
 
 ```
-                 SS client / SOCKS5 apps (TCP+UDP)
+                 SS client / SOCKS5 / HTTP apps (sing-box, etc.)
                            |
-        +------------------V---------------------------+
-        | ACCESS   ss-server :8388   sockd (SOCKS5) :1080|
-        |          (uid: proxy)                          |
-        +------------------+----------------------------+
+        +------------------V---------------------------------------+
+        | ACCESS   ss-server :8388   sockd :1080   tinyproxy :8888 |
+        |          (uid: proxy)                                    |
+        +------------------+---------------------------------------+
                            | egress flows
         +------------------V---------------------------+
         | DPI      iptables mangle/OUTPUT -> NFQUEUE 210 |
@@ -29,8 +29,9 @@ single-file **HTML panel** swaps the zapret **strategy** and restarts nfqws.
 
 ## Features (Stage 1)
 
-- **Access**: Shadowsocks server (`shadowsocks-libev`) and SOCKS5 (`dante`)
-  in one container; both TCP and UDP.
+- **Access**: Shadowsocks server (`shadowsocks-libev`), SOCKS5 (`dante`),
+  and HTTP proxy (`tinyproxy` with HTTP/HTTPS CONNECT support) in one container;
+  TCP and UDP.
 - **DPI**: native `nfqws2` from `bol-van/zapret2` (pinned commit),
   NFQUEUE 210 for TCP (211 reserved for UDP), desync of the first N packets per flow,
   `--fwmark` loop protection, IPv4.
@@ -74,6 +75,44 @@ Client configuration:
 |---|---|---|---|
 | Shadowsocks | your host IP | `SS_LISTEN_PORT` (8388) | AES-256-GCM (see `.env`) |
 | SOCKS5 | your host IP | `SOCKS5_LISTEN_PORT` (1080) | none / TCP+UDP |
+| HTTP proxy | your host IP | `HTTP_LISTEN_PORT` (8888) | HTTP / HTTPS (CONNECT) |
+
+### Sing-box outbound configuration
+
+To route traffic from **sing-box** to `web_zapret2`, add an `http` outbound in your sing-box configuration:
+
+```json
+{
+  "type": "http",
+  "tag": "web_zapret-http",
+  "server": "127.0.0.1",
+  "server_port": 8888
+}
+```
+
+If sing-box runs in a Docker container on the shared `s-ui_s-ui` network:
+
+```json
+{
+  "type": "http",
+  "tag": "web_zapret-http",
+  "server": "web_zapret2",
+  "server_port": 8888
+}
+```
+
+If Basic authentication was enabled via `HTTP_USER` and `HTTP_PASSWORD`:
+
+```json
+{
+  "type": "http",
+  "tag": "web_zapret-http",
+  "server": "web_zapret2",
+  "server_port": 8888,
+  "username": "your-username",
+  "password": "your-password"
+}
+```
 
 ## Configuration
 
@@ -229,7 +268,7 @@ outgoing traffic; scripts requiring incoming packets need additional rules.
   guards loopback and nfqws re-injected packets, then either NFQUEUEs the
   access-uid traffic (direct) or redirects it into the exit layer (upstream),
   and desyncs the exit flows toward the upstream endpoint.
-- `src/wz-svc.sh` — pidfile-based supervisor for `ss-server`, `sockd`,
+- `src/wz-svc.sh` — pidfile-based supervisor for `ss-server`, `sockd`, `tinyproxy`,
   `nfqws`, and (in upstream modes) `redsocks`, `ss-local`, `wz-udprelay`.
 - `src/wz-apply.sh` — transactional single-writer apply for strategy/mode.
 - `src/wz-udprelay/wz-udprelay.c` — transparent UDP relay: reads UDP from a
@@ -294,7 +333,7 @@ docker compose exec gateway wz-apply.sh status
 docker compose exec gateway tail -n 50 /var/log/webzapret/nfqws.log
 ```
 
-Logs: `/var/log/webzapret/{nfqws,ss-server,sockd,redsocks,ss-local,udprelay,panel}.log`
+Logs: `/var/log/webzapret/{nfqws,ss-server,sockd,tinyproxy,redsocks,ss-local,udprelay,panel}.log`
 
 **Connection-level logging is enabled by default**: `ss-server`/`ss-local`
 run with `-v`, Dante logs `connect`/`disconnect` events, `nfqws` runs with

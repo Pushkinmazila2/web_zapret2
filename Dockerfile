@@ -59,6 +59,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         # services
         shadowsocks-libev \
         dante-server \
+        tinyproxy \
         redsocks \
         # networking / management
         iptables nftables iproute2 iputils-ping procps curl ca-certificates \
@@ -111,6 +112,6 @@ RUN setcap cap_net_admin,cap_net_raw+ep /opt/webzapret/bin/wz-udprelay 2>/dev/nu
  && ln -sf /opt/webzapret/scripts/*.sh /usr/local/sbin/ \
  && mkdir -p /opt/webzapret/state
 
-EXPOSE 8388/tcp 8388/udp 1080/tcp 1080/udp 8080/tcp
+EXPOSE 8388/tcp 8388/udp 1080/tcp 1080/udp 8888/tcp 8080/tcp
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/opt/webzapret/scripts/entrypoint.sh"]
