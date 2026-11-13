@@ -1,0 +1,30 @@
+{
+  "_comment": "Host -> traffic class rules for the Traffic tab. First match wins; 'suffix' matches the host itself or any subdomain. The class is a GUESS from the hostname (HTTPS paths are invisible), shown to the user as 'likely'. Edit freely; unknown hosts are 'other'.",
+  "rules": [
+    {"suffix": "googlevideo.com",        "class": "video",     "label": "YouTube video"},
+    {"suffix": "ytimg.com",              "class": "image",     "label": "YouTube images/thumbnails"},
+    {"suffix": "ggpht.com",              "class": "image",     "label": "Google/YouTube avatars"},
+    {"suffix": "youtubei.googleapis.com","class": "api",       "label": "YouTube API"},
+    {"suffix": "youtube.com",            "class": "web",       "label": "YouTube site"},
+    {"suffix": "youtu.be",               "class": "web",       "label": "YouTube short link"},
+    {"suffix": "returnyoutubedislikeapi.com", "class": "api",  "label": "YouTube add-on API"},
+    {"suffix": "cdninstagram.com",       "class": "media",     "label": "Instagram media"},
+    {"suffix": "fbcdn.net",              "class": "media",     "label": "Meta CDN media"},
+    {"suffix": "instagram.com",          "class": "web",       "label": "Instagram"},
+    {"suffix": "facebook.com",           "class": "web",       "label": "Facebook"},
+    {"suffix": "twimg.com",              "class": "media",     "label": "Twitter/X media"},
+    {"suffix": "x.com",                  "class": "web",       "label": "Twitter/X"},
+    {"suffix": "twitter.com",            "class": "web",       "label": "Twitter/X"},
+    {"suffix": "ttvnw.net",              "class": "video",     "label": "Twitch video"},
+    {"suffix": "twitch.tv",              "class": "web",       "label": "Twitch"},
+    {"suffix": "nflxvideo.net",          "class": "video",     "label": "Netflix video"},
+    {"suffix": "t.me",                   "class": "messenger", "label": "Telegram"},
+    {"suffix": "telegram.org",           "class": "messenger", "label": "Telegram"},
+    {"suffix": "discord.com",            "class": "messenger", "label": "Discord"},
+    {"suffix": "discordapp.com",         "class": "messenger", "label": "Discord"},
+    {"suffix": "discord.gg",             "class": "messenger", "label": "Discord"},
+    {"suffix": "github.com",             "class": "dev",       "label": "GitHub"},
+    {"suffix": "githubusercontent.com",  "class": "dev",       "label": "GitHub content"},
+    {"suffix": "speedtest.net",          "class": "test",      "label": "Speedtest"}
+  ]
+}

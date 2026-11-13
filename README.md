@@ -134,6 +134,30 @@ Everything lives in `.env` (see `.env.example`). Important variables:
 | `UPSTREAM_SOCKS5_*`, `UPSTREAM_SS_*` | — | upstream proxy (for upstream modes) |
 | `WAN_IFACE` | `eth0` | container egress interface |
 
+### Traffic tab (flows)
+
+The **Traffic** tab turns the proxy logs into a table of *flows* instead of raw lines:
+who connected, to which host, a guess of the traffic type (video / image / api / ...),
+the protocol (TCP/UDP + a service guess from the port), the path (socks5 / ss / http and
+the sing-box outbound), bytes up/down, duration, and how it ended.
+
+Sources (all optional; nothing is written to disk, flows live in memory with a TTL):
+
+- `sockd.log` — client, outbound 5-tuple, bytes and duration of every SOCKS5 connection
+  (dante logs IPs only, no hostnames).
+- `ss-server.log` / `tinyproxy.log` — hostnames of Shadowsocks / HTTP-proxy connections.
+- **sing-box Clash API** (`SINGBOX_API_URL`, `SINGBOX_API_SECRET`) — real client IP,
+  sniffed host, matched routing rule, outbound chain. sing-box and the container stay
+  independent: the two views are joined by destination IP:port (or host) and time, and
+  the *Hosts* table is where they meet. `SINGBOX_CONTAINER_OUTBOUND` is the name of the
+  sing-box outbound that leads here (default `zapretDPI`); connections sent there but not
+  found in the container's logs are marked **not seen in container**.
+
+The traffic *type* is a guess from the hostname (rules in `config/traffic_classes.json`,
+edit freely) and the *protocol* a guess from the port: HTTPS paths are invisible, and
+TLS version / QUIC detection needs the nfqws trace (planned). The *parser debug* box shows
+log lines the parsers did not understand.
+
 ### Strategy selection (blockcheckw)
 
 The **Strategy selection** tab integrates
