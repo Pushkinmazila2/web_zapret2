@@ -99,7 +99,7 @@ log_module entry "web_zapret2 ready. exit_mode=$EXIT_MODE strategy=$STRATEGY"
 
 # stream logs to stdout for docker logs; include the shared actions log
 tail -F "$WZ_LOG/actions.log" "$WZ_LOG/nfqws.log" "$WZ_LOG/ss-server.log" "$WZ_LOG/sockd.log" \
-    "$WZ_LOG/tinyproxy.log" "$WZ_LOG/panel.log" /dev/null 2>/dev/null &
+    "$WZ_LOG/blockcheck.log" "$WZ_LOG/tinyproxy.log" "$WZ_LOG/panel.log" /dev/null 2>/dev/null &
 TAIL_PID=$!
 while kill -0 "$TAIL_PID" 2>/dev/null || kill -0 "$PANEL_PID" 2>/dev/null; do
     sleep 2

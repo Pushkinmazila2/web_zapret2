@@ -76,5 +76,24 @@ queue_busy() { return "$busy"; }
                                  (result.stdout + result.stderr).decode())
 
 
+class LogAndUiWiringTests(unittest.TestCase):
+    def test_blockcheck_log_is_streamed_to_docker_logs(self):
+        entry = (ROOT / "src/entrypoint.sh").read_text(encoding="utf-8")
+        self.assertIn('"$WZ_LOG/blockcheck.log"', entry[entry.index("tail -F"):])
+
+    def test_harness_keeps_stderr_for_the_log_but_not_the_result_json(self):
+        script = (ROOT / "src/wz-bcw.sh").read_text(encoding="utf-8")
+        self.assertIn('"$RUN_DIR" >/dev/null', script)
+        self.assertIn('2>>"$BCW_LOG"', script)
+
+    def test_job_states_have_distinct_colours(self):
+        page = (ROOT / "src/panel/index.html").read_text(encoding="utf-8")
+        for state, colour in (("running", "--warn"), ("done", "--ok"),
+                              ("error", "--bad")):
+            self.assertRegex(page, r"%s:\s*'var\(%s\)'" % (state, colour))
+        self.assertIn("--warn:#", page)
+        self.assertIn("esc(String(job.rc))", page)
+
+
 if __name__ == "__main__":
     unittest.main()

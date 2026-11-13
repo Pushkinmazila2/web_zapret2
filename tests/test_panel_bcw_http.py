@@ -138,5 +138,66 @@ class ImportHTTPTests(unittest.TestCase):
             self.assertTrue(res["ok"], res)
 
 
+class CollectStateTests(unittest.TestCase):
+    """_bcw_collect(): job state shown (and coloured) in the UI."""
+
+    class FakeProc:
+        def __init__(self, payload, rc=0):
+            import io
+            self.stdout = io.BytesIO(payload)
+            self._rc = rc
+
+        def wait(self):
+            return self._rc
+
+    def _collect(self, result, rc=0):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "runs" / "r1"
+            run_dir.mkdir(parents=True)
+            job = {"state": "running", "run_id": "r1", "run_dir": str(run_dir),
+                   "pid": 1}
+            payload = json.dumps(result).encode() if result is not None else b"noise"
+            with patch.object(panel, "BCW_STATE_DIR", tmp), \
+                    patch.object(panel, "BCW_RUNS_DIR", str(Path(tmp) / "runs")), \
+                    patch.object(panel, "WZ_LOG", tmp), \
+                    patch.object(panel, "bcw", blockcheck):
+                panel._bcw_collect(self.FakeProc(payload, rc), job)
+            saved_job = blockcheck.load_job(tmp)
+            last = blockcheck.read_json(Path(tmp) / blockcheck.LAST_RUN_FILE)
+            return saved_job, last
+
+    def test_success_is_done(self):
+        job, last = self._collect({"ok": True, "success": True, "errors": [],
+                                   "domains": [{"domain": "d", "working": [{}]}]})
+        self.assertEqual(job["state"], "done")
+        self.assertEqual(job["error"], "")
+        self.assertIsNotNone(last)
+
+    def test_clean_run_without_candidates_is_done(self):
+        job, _ = self._collect({"ok": True, "success": False, "errors": [],
+                                "domains": [{"domain": "d", "working": []}]})
+        self.assertEqual(job["state"], "done")
+
+    def test_errors_without_a_result_are_an_error_and_replace_the_stale_last_run(self):
+        job, last = self._collect({"ok": True, "success": False,
+                                   "errors": ["d: scan produced no readable report"],
+                                   "domains": [{"domain": "d", "working": []}]})
+        self.assertEqual(job["state"], "error")
+        self.assertIn("no readable report", job["error"])
+        self.assertEqual(last["errors"], ["d: scan produced no readable report"])
+
+    def test_preflight_failure_message_reaches_the_job(self):
+        job, last = self._collect({"ok": False, "error": "preflight failed: FAIL nft"},
+                                  rc=1)
+        self.assertEqual(job["state"], "error")
+        self.assertIn("preflight failed", job["error"])
+        self.assertIsNone(last)
+
+    def test_no_output_at_all_is_an_error_with_a_hint(self):
+        job, _ = self._collect(None, rc=1)
+        self.assertEqual(job["state"], "error")
+        self.assertIn("blockcheck.log", job["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -41,6 +41,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 
 BCW_BIN_DEFAULT = "/opt/webzapret/bin/blockcheckw"
@@ -620,11 +621,15 @@ def parse_check_report(data):
     }
 
 
+_OBJECT_START = re.compile(r"^\{", re.M)
+
+
 def read_report(path):
     """Read a scan/check report from disk (None when missing/unreadable).
 
-    Tolerates stray text around the JSON object (a captured stdout may carry a
-    leading log line): the first complete object wins."""
+    A captured stdout is NOT clean JSON: blockcheckw prints a header + verdict
+    line per tested strategy before the final report.  So when the whole file is
+    not JSON, take the LAST object that starts at the beginning of a line."""
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as handle:
             text = handle.read()
@@ -634,13 +639,49 @@ def read_report(path):
         return json.loads(text)
     except ValueError:
         pass
-    start = text.find("{")
-    if start < 0:
-        return None
+    decoder = json.JSONDecoder()
+    for match in reversed(list(_OBJECT_START.finditer(text))):
+        try:
+            data, _ = decoder.raw_decode(text[match.start():])
+        except ValueError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def load_scan_report(run_dir, scan_out):
+    """Find the scan report of one domain: the captured stdout first, then the
+    `<date>_scan.json` blockcheckw always drops into its working directory.
+
+    Returns (report, source_path) or (None, None)."""
     try:
-        return json.JSONDecoder().raw_decode(text[start:])[0]
-    except ValueError:
-        return None
+        extra = sorted((os.path.join(run_dir, name) for name in os.listdir(run_dir)
+                        if name.endswith("_scan.json")),
+                       key=os.path.getmtime, reverse=True)
+    except OSError:
+        extra = []
+    for path in [scan_out] + extra:
+        report = parse_scan_report(read_report(path))
+        if report is not None:
+            return report, path
+    return None, None
+
+
+def describe_capture(path, limit=160):
+    """Short human description of a file (size + head/tail) for error messages."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as handle:
+            head = handle.read(limit)
+            handle.seek(max(0, size - limit))
+            tail = handle.read(limit)
+    except OSError:
+        return "missing"
+    clean = lambda raw: " ".join(raw.decode("utf-8", "replace").split())
+    if not size:
+        return "empty"
+    return "%d bytes, head: %r, tail: %r" % (size, clean(head), clean(tail))
 
 
 # ---------------------------------------------------------------------------
@@ -877,38 +918,153 @@ def prune_runs(runs_dir, keep=10):
     return removed
 
 
-def _run_step(cmd, log_path, timeout, env, cwd, stdout_path=None):
-    """Run one blockcheckw step, streaming its output into log_path.
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
-    With `stdout_path` the step's STDOUT goes to that file instead (used for
-    `scan`, whose JSON report is printed there); stderr always goes to the log."""
-    with open(log_path, "a", encoding="utf-8", errors="replace") as log:
-        log.write("\n$ %s\n" % " ".join(cmd))
-        log.flush()
-        out = None
+
+def _stamp():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+class _TrialFilter(object):
+    """Condense blockcheckw's chatter for the run log / `docker logs`.
+
+    A scan prints two lines per tested strategy ("- curl_test_... : nfqws2 ARGS"
+    and a verdict) — thousands of them, almost all failures.  Failed trials are
+    dropped and counted; AVAILABLE and ERROR trials, every other line and a
+    periodic progress counter are kept.  The final JSON report is not echoed
+    (it is captured into a file)."""
+
+    HEADER = re.compile(r"^- \w+ ipv\d \S+ : nfqws2 ")
+    PROGRESS_EVERY = 500
+
+    def __init__(self):
+        self.header = None
+        self.tested = 0
+        self.available = 0
+        self.in_json = False
+
+    def feed(self, line):
+        line = line.rstrip("\r\n")
+        out = []
+        if self.in_json:
+            if line.startswith("}"):
+                self.in_json = False
+            return out
+        if line.startswith("{"):
+            self.in_json = not line.rstrip().endswith("}")
+            return out
+        if self.header is not None:
+            header, self.header = self.header, None
+            self.tested += 1
+            if "AVAILABLE" in line:
+                self.available += 1
+                out += [header, line]
+            elif line.startswith("ERROR"):
+                out += [header, line]
+            if self.tested % self.PROGRESS_EVERY == 0:
+                out.append("progress: %d strategies tested, %d available"
+                           % (self.tested, self.available))
+            return out
+        if self.HEADER.match(line):
+            self.header = line
+            return out
+        if line.strip():
+            out.append(line)
+        return out
+
+    def finish(self):
+        out = []
+        if self.header is not None:
+            out.append(self.header)
+            self.header = None
+        if self.tested:
+            out.append("progress: %d strategies tested, %d available (finished)"
+                       % (self.tested, self.available))
+        return out
+
+
+def log_line(log_path, text):
+    """Append one line to the run log and echo it to the container log (stderr
+    of the harness goes to blockcheck.log, which the entrypoint streams)."""
+    try:
+        with open(log_path, "a", encoding="utf-8", errors="replace") as log:
+            log.write(text + "\n")
+    except OSError:
+        pass
+    try:
+        sys.stderr.write("[%s] [bcw] %s\n" % (_stamp(), text))
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def _run_step(cmd, log_path, timeout, env, cwd, stdout_path=None):
+    """Run one blockcheckw step; return (returncode, note).
+
+    Its output is streamed live (filtered, see _TrialFilter) into log_path and
+    to our stderr, i.e. into blockcheck.log / `docker logs`.  With `stdout_path`
+    the UNFILTERED stdout is also saved there (used for `scan`, whose JSON report
+    is printed on stdout); stderr is only logged."""
+    lock = threading.Lock()
+    log_line(log_path, "$ %s" % " ".join(cmd))
+    out = None
+    if stdout_path:
         try:
-            if stdout_path:
-                out = open(stdout_path, "w", encoding="utf-8")
+            out = open(stdout_path, "w", encoding="utf-8", errors="replace")
         except OSError as exc:
-            log.write("\n!! cannot open %s: %s\n" % (stdout_path, exc))
+            log_line(log_path, "!! cannot open %s: %s" % (stdout_path, exc))
             return 127, str(exc)
+
+    def emit(text):
+        with lock:
+            log_line(log_path, text)
+
+    def pump(stream, raw):
+        flt = _TrialFilter()
         try:
-            # stdin=DEVNULL: `blockcheckw check` reads stdin to EOF when it is
-            # not a terminal (pipe mode) — an inherited open pipe would hang it.
-            proc = subprocess.run(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                                  stdout=out if out is not None else log,
-                                  stderr=log if out is not None else subprocess.STDOUT,
-                                  timeout=timeout)
-            return proc.returncode, None
-        except subprocess.TimeoutExpired:
-            log.write("\n!! step timed out after %ss\n" % timeout)
-            return 124, "timeout after %ss" % timeout
-        except OSError as exc:
-            log.write("\n!! cannot run %s: %s\n" % (cmd[0], exc))
-            return 127, str(exc)
+            for line in stream:
+                if raw is not None:
+                    raw.write(line)
+                for item in flt.feed(_ANSI.sub("", line)):
+                    emit(item)
+        except (OSError, ValueError):
+            pass
         finally:
-            if out is not None:
-                out.close()
+            for item in flt.finish():
+                emit(item)
+
+    try:
+        try:
+            proc = subprocess.Popen(
+                cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                universal_newlines=True, encoding="utf-8", errors="replace",
+                bufsize=1)
+        except OSError as exc:
+            emit("!! cannot run %s: %s" % (cmd[0], exc))
+            return 127, str(exc)
+        threads = [threading.Thread(target=pump, args=(proc.stdout, out), daemon=True),
+                   threading.Thread(target=pump, args=(proc.stderr, None), daemon=True)]
+        for thread in threads:
+            thread.start()
+        note = None
+        try:
+            rc = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.terminate()                   # let blockcheckw clean up nft/nfqws2
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            rc, note = 124, "timeout after %ss" % timeout
+            emit("!! step timed out after %ss" % timeout)
+        for thread in threads:
+            thread.join(timeout=15)
+        return rc, note
+    finally:
+        if out is not None:
+            out.close()
 
 
 def run(settings, run_dir, log_path=None, environ=None):
@@ -957,11 +1113,20 @@ def run(settings, run_dir, log_path=None, environ=None):
                 item["domain"], rc, ": " + note if note else ""))
             result["domains"].append(dom)
             continue
-        scan = parse_scan_report(read_report(item["scan_out"]))
+        scan, source = load_scan_report(run_dir, item["scan_out"])
         if scan is None:
-            result["errors"].append("%s: scan produced no readable report" % item["domain"])
+            detail = describe_capture(item["scan_out"])
+            files = ", ".join(sorted(os.listdir(run_dir))[:12])
+            log_line(log_path, "!! %s: no scan report (stdout capture: %s; run dir: %s)"
+                     % (item["domain"], detail, files))
+            result["errors"].append(
+                "%s: scan produced no readable report (stdout capture: %s)"
+                % (item["domain"], detail))
             result["domains"].append(dom)
             continue
+        if source != item["scan_out"]:
+            log_line(log_path, "scan report taken from %s (stdout capture unusable)"
+                     % os.path.basename(source))
         dom.update(block_type=scan["block_type"], blocked=scan["blocked"],
                    scanned=len(scan["strategies"]), scan=scan)
         if not scan["strategies"]:

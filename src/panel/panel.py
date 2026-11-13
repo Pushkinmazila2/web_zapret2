@@ -28,6 +28,9 @@ Endpoints
     GET  /api/logs?src=<svc>&n=<N>  tail a service log
     GET  /api/logs/export           download one merged connection log (all modules)
     GET  /api/traffic               nfqws traffic counters (in/out bytes)
+    GET  /api/flows                 Traffic tab: unified flow table (?limit=&class=&transport=&access=&q=&open=1)
+    GET  /api/flows/hosts           Traffic tab: per-host aggregate
+    GET  /api/flows/summary         Traffic tab: pipeline counters + parser debug
 
 CLI: python3 panel.py [--check] [--help]
 """
@@ -90,6 +93,52 @@ try:
     import blockcheck as bcw          # noqa: E402  (optional feature module)
 except ImportError:
     bcw = None
+try:
+    import flows as flowlib           # noqa: E402  (optional: Traffic tab)
+except ImportError:
+    flowlib = None
+
+# --- Traffic tab (flows.py): in-memory flow table fed by the proxy logs and,
+# optionally, the sing-box Clash API ----------------------------------------
+FLOWS = None
+
+
+def _env_int(name, default):
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+def flows_start():
+    """Create the flow store and start the log tailers / Clash poller."""
+    global FLOWS
+    if flowlib is None:
+        return None
+    rules = flowlib.load_classes(os.path.join(WZ_SRC, "config", "traffic_classes.json"))
+    FLOWS = flowlib.FlowStore(
+        rules=rules, maxlen=_env_int("TRAFFIC_BUFFER", 3000),
+        ttl=_env_int("TRAFFIC_TTL", 3600),
+        container_outbound=os.environ.get("SINGBOX_CONTAINER_OUTBOUND", "zapretDPI"))
+    flowlib.start_collectors(
+        FLOWS, WZ_LOG, os.environ.get("SINGBOX_API_URL", "").strip(),
+        os.environ.get("SINGBOX_API_SECRET", "").strip(),
+        float(_env_int("SINGBOX_POLL_SECONDS", 3)))
+    return FLOWS
+
+
+def _int_arg(q, key, default, lo, hi):
+    """Clamp a numeric query parameter; garbage falls back to the default."""
+    try:
+        value = int(q.get(key, "") or default)
+    except ValueError:
+        value = default
+    return max(lo, min(hi, value))
+
+
+def _query(path):
+    from urllib.parse import parse_qs, urlsplit
+    return {k: v[-1] for k, v in parse_qs(urlsplit(path).query).items()}
 
 # --- access layer endpoints (used to build client connection strings) --------
 SS_LISTEN_PORT = int(os.environ.get("SS_LISTEN_PORT", "8388") or 8388)
@@ -885,11 +934,16 @@ def _bcw_collect(proc, job):
             res = {}
     if not isinstance(res, dict) or not res:
         res = bcw.read_json(os.path.join(job["run_dir"], "result.json"), {}) or {}
-    state = "done" if res.get("ok") else "error"
-    job = dict(job, state=state, rc=rc,
+    # A run that only produced errors (no working strategy) is a failure, not "done".
+    failed = (not res.get("ok")) or (bool(res.get("errors")) and not res.get("success"))
+    error = res.get("error") or "; ".join(res.get("errors") or [])
+    if failed and not error:
+        error = "harness produced no result (rc=%s) - see blockcheck.log" % rc
+    job = dict(job, state="error" if failed else "done", rc=rc, error=error[:600],
                finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     bcw.save_job(BCW_STATE_DIR, job)
-    if res.get("ok"):
+    if res.get("domains") is not None:
+        # always keep the newest result: a stale older run must not mask a failure
         bcw.write_json(bcw.state_path(BCW_STATE_DIR, bcw.LAST_RUN_FILE), res)
     try:
         bcw.prune_runs(BCW_RUNS_DIR, BCW_KEEP_RUNS)
@@ -1180,6 +1234,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"mode": active_exit_mode()})
         if path == "/api/traffic":
             return self._send(200, get_traffic_stats())
+        if path in ("/api/flows", "/api/flows/hosts", "/api/flows/summary"):
+            if FLOWS is None:
+                return self._send(503, {"ok": False, "error": "traffic module unavailable"})
+            q = _query(self.path)
+            if path == "/api/flows/summary":
+                return self._send(200, FLOWS.summary())
+            if path == "/api/flows/hosts":
+                return self._send(200, {"hosts": FLOWS.hosts_view(
+                    limit=_int_arg(q, "limit", 100, 1, 500))})
+            return self._send(200, {"flows": FLOWS.flows_view(
+                limit=_int_arg(q, "limit", 200, 1, 1000),
+                cls=q.get("class", ""), transport=q.get("transport", ""),
+                access=q.get("access", ""), q=q.get("q", ""),
+                only_open=q.get("open", "") in ("1", "true"))})
         if path == "/api/logs/export":
             body = export_logs().encode("utf-8")
             stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -1310,6 +1378,7 @@ def main():
         return check()
     if bcw is not None and os.access(WZ_BCW, os.X_OK):
         threading.Thread(target=_bcw_scheduler, daemon=True).start()
+    flows_start()
     httpd = ThreadingHTTPServer((HTTPD_HOST, HTTPD_PORT), Handler)
     print("panel listening on %s:%s" % (HTTPD_HOST, HTTPD_PORT), flush=True)
     try:

@@ -94,7 +94,7 @@ COPY config/ /opt/webzapret/config/
 COPY src/entrypoint.sh src/wz-common.sh src/wz-fw.sh src/wz-svc.sh src/wz-apply.sh src/wz-test.sh src/wz-bcw.sh \
      /opt/webzapret/scripts/
 COPY src/panel/ /opt/webzapret/panel/
-COPY src/strategy.py src/blockcheck.py /opt/webzapret/scripts/
+COPY src/strategy.py src/blockcheck.py src/flows.py /opt/webzapret/scripts/
 COPY --from=blockcheck-builder /build/blockcheckw/target/release/blockcheckw /opt/webzapret/bin/blockcheckw
 COPY --from=blockcheck-builder /build/blockcheckw.version /opt/webzapret/config/blockcheckw.version
 # Upstream blockcheckw expects this fixed zapret2 layout.

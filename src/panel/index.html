@@ -6,7 +6,7 @@
 <title>web_zapret2 &mdash; panel</title>
 <style>
 :root { --bg:#0f1622; --card:#17202e; --fg:#e6edf3; --mut:#8b96a3; --acc:#4f9cf9;
-        --ok:#3fb950; --bad:#f85149; --mono:ui-monospace,Consolas,monospace; }
+        --ok:#3fb950; --bad:#f85149; --warn:#f0883e; --mono:ui-monospace,Consolas,monospace; }
 * { box-sizing:border-box; }
 body { background:var(--bg); color:var(--fg); font:14px/1.45 system-ui,sans-serif;
        margin:0; padding:24px; }
@@ -47,6 +47,7 @@ button[disabled] { opacity:.55; cursor:default; }
   <button class="tab" data-tab="strategy">Strategy</button>
   <button class="tab" data-tab="test">Test</button>
   <button class="tab" data-tab="bcw">Strategy selection</button>
+  <button class="tab" data-tab="traffic">Traffic</button>
   <button class="tab" data-tab="logs">Logs</button>
 </div>
 
@@ -272,6 +273,45 @@ button[disabled] { opacity:.55; cursor:default; }
     <button id="bcw-import-all">Import all working (top N per protocol)</button>
   </p>
   <pre class="mono scrollable" id="bcw-log" style="height:180px; max-height:180px; margin-top:10px;"></pre>
+</div>
+</section>
+
+<section class="tab-page" id="page-traffic">
+<div class="card">
+  <label>Traffic &mdash; where do the connections go</label>
+  <div id="tr-pipe" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;"></div>
+  <p class="status" id="tr-note" style="margin:8px 0 0;"></p>
+</div>
+<div class="card">
+  <label>Hosts <span class="status">&mdash; where the sing-box side and the container side meet</span></label>
+  <table>
+    <thead><tr><th>Host</th><th>Type (guess)</th><th>Flows</th><th>&uarr; / &darr;</th><th>To container / elsewhere</th><th>Not seen</th><th>Outbound</th></tr></thead>
+    <tbody id="tr-hosts"><tr><td colspan="7" class="status">loading&hellip;</td></tr></tbody>
+  </table>
+</div>
+<div class="card">
+  <label>Flows</label>
+  <p style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:6px 0;">
+    <select id="tr-f-class" style="padding:4px 8px; background:#121a26; color:var(--fg); border:1px solid #33455b;">
+      <option value="">any type</option><option>video</option><option>image</option><option>media</option>
+      <option>api</option><option>web</option><option>messenger</option><option>dev</option><option>other</option>
+    </select>
+    <select id="tr-f-transport" style="padding:4px 8px; background:#121a26; color:var(--fg); border:1px solid #33455b;">
+      <option value="">tcp+udp</option><option>tcp</option><option>udp</option>
+    </select>
+    <select id="tr-f-access" style="padding:4px 8px; background:#121a26; color:var(--fg); border:1px solid #33455b;">
+      <option value="">any access</option><option>socks5</option><option>ss</option><option>http</option>
+    </select>
+    <input id="tr-f-q" placeholder="host / ip / client" style="padding:4px 8px; background:#121a26; color:var(--fg); border:1px solid #33455b;">
+    <label style="margin:0;"><input type="checkbox" id="tr-f-open"> only open</label>
+    <span class="status">auto: 3s</span>
+  </p>
+  <table>
+    <thead><tr><th>Start</th><th>Client</th><th>Target</th><th>Type</th><th>Protocol</th><th>Path</th><th>&uarr; / &darr;</th><th>Time</th><th>State</th></tr></thead>
+    <tbody id="tr-flows"><tr><td colspan="9" class="status">loading&hellip;</td></tr></tbody>
+  </table>
+  <details style="margin-top:10px;"><summary class="status">parser debug</summary>
+    <pre class="mono scrollable" id="tr-debug" style="max-height:160px;"></pre></details>
 </div>
 </section>
 
@@ -710,10 +750,14 @@ function bcwRenderLast(last) {
   const body = $('#bcw-rows');
   body.innerHTML = '';
   if (!last) { $('#bcw-last-summary').textContent = 'no runs yet'; return; }
+  const errs = last.errors || [];
   $('#bcw-last-summary').innerHTML =
     (last.success ? '<b style="color:var(--ok)">working strategies found</b>'
-                  : '<b style="color:var(--bad)">no working strategy</b>')
-    + ' &middot; run ' + esc(last.run_id || '') + ' &middot; ' + esc(last.summary || '');
+       : errs.length ? '<b style="color:var(--bad)">run finished with errors</b>'
+       : '<b style="color:var(--warn)">no working strategy</b>')
+    + ' &middot; run ' + esc(last.run_id || '') + ' &middot; ' + esc(last.summary || '')
+    + (errs.length ? '<br><span style="color:var(--bad)">'
+       + errs.map(esc).join('<br>') + '</span>' : '');
   (last.domains || []).forEach(d => {
     (d.working || []).forEach(r => {
       const share = (r.median_share === null || r.median_share === undefined)
@@ -744,13 +788,18 @@ async function loadBcw() {
       + esc(o.settings_errors.join('; ')) + '</span>';
   }
   const job = o.job || {};
+  const jobColors = { running: 'var(--warn)', cancelling: 'var(--warn)',
+                      done: 'var(--ok)', error: 'var(--bad)', lost: 'var(--bad)' };
   $('#bcw-job').innerHTML = job.state
-    ? 'job: <b>' + esc(job.state) + '</b>'
+    ? 'job: <b style="color:' + (jobColors[job.state] || 'inherit') + '">'
+      + esc(job.state) + '</b>'
       + (job.run_id ? ' &middot; run ' + esc(job.run_id) : '')
       + (job.source ? ' &middot; ' + esc(job.source) : '')
       + (job.started_at ? ' &middot; since ' + esc(job.started_at) : '')
       + (job.rc !== null && job.rc !== undefined && job.state !== 'running'
-         ? ' &middot; rc=' + esc(job.rc) : '')
+         ? ' &middot; rc=' + esc(String(job.rc)) : '')
+      + (job.error && job.state !== 'running'
+         ? '<br><span style="color:var(--bad)">' + esc(job.error) + '</span>' : '')
     : 'job: idle';
   $('#bcw-cancel').disabled = !(job.state === 'running' || job.state === 'cancelling');
   const sch = o.schedule || {};
@@ -858,6 +907,137 @@ $('#bcw-import-all').addEventListener('click', async () => {
     await loadStrategies();
   } else toast('import failed: ' + (res.error || '?'), true);
 });
+
+// --- Traffic tab ------------------------------------------------------------
+const TR_CLASS_COLOR = { video:'#d29922', image:'#3fb950', media:'#3fb950', api:'#58a6ff',
+  web:'#8b949e', messenger:'#bc8cff', dev:'#8b949e', test:'#8b949e', other:'#6e7681' };
+const trOpen = new Set();
+let trFlows = [];
+function trBadge(text, color, title) {
+  return '<span title="' + esc(title || '') + '" style="display:inline-block; padding:1px 7px; border-radius:9px; '
+    + 'font-size:11px; border:1px solid ' + color + '; color:' + color + ';">' + esc(text) + '</span>';
+}
+function trDur(s) {
+  s = Math.max(0, Math.round(s || 0));
+  return s < 60 ? s + 's' : s < 3600 ? Math.floor(s / 60) + 'm' + (s % 60) + 's'
+    : Math.floor(s / 3600) + 'h' + Math.floor((s % 3600) / 60) + 'm';
+}
+function trClock(ts) { return new Date(ts * 1000).toLocaleTimeString([], { hour12: false }); }
+function trClass(f) {
+  if (!f.class) return '<span class="status">&mdash;</span>';
+  const t = f.class_label ? f.class_label + ' (likely, from hostname)' : 'likely, from hostname';
+  return trBadge(f.class, TR_CLASS_COLOR[f.class] || '#6e7681', t);
+}
+function trProto(f) {
+  const udp = f.transport === 'udp';
+  return trBadge(f.transport.toUpperCase(), udp ? '#d29922' : '#58a6ff', 'transport')
+    + (f.service ? ' ' + esc(f.service) + (f.basis === 'port' ? ' <span class="status" title="guessed from the port">?</span>' : '') : '')
+    + (f.family ? ' <span class="status">' + esc(f.family) + '</span>' : '');
+}
+function trPath(f) {
+  const bits = [];
+  if (f.access) bits.push(trBadge(f.access, '#8b949e', 'how it entered the container'));
+  if (f.chains && f.chains.length) bits.push(trBadge(f.chains.join(' > '),
+    f.to_container ? 'var(--ok)' : '#6e7681', f.to_container ? 'sent to this container' : 'not via this container'));
+  return bits.join(' ') || '<span class="status">&mdash;</span>';
+}
+function trState(f) {
+  let s = f.state === 'closed' ? '<span class="status">closed</span>' : f.state === 'seen'
+    ? '<span class="status">seen</span>' : '<span style="color:var(--ok)">open</span>';
+  if (f.reason && f.state === 'closed') s += ' <span class="status">' + esc(f.reason) + '</span>';
+  if (f.seen_by_container === false) s += ' <span style="color:var(--bad)" title="sing-box sent this connection to the container, but no matching line was found in its proxy logs">not seen in container</span>';
+  return s;
+}
+function trDetail(f) {
+  const rows = [
+    ['client', (f.client || '?') + (f.client_port ? ':' + f.client_port : '') + (f.inbound ? '  via ' + f.inbound : '')],
+    ['target', (f.host || '?') + '  ' + (f.dst_ip ? f.dst_ip + ':' : ':') + f.dst_port + (f.host_src ? '   (host known from: ' + f.host_src + ')' : '')],
+    ['routing rule', f.rule || ''],
+    ['shape', (f.shape || '') + (f.rate_kbps ? '  ~' + f.rate_kbps + ' kbit/s down' : '')],
+    ['class', f.class_label || ''],
+    ['container side', f.container ? (f.container.access + '  up ' + formatBytes(f.container.up) + ' / down ' + formatBytes(f.container.down)
+       + (f.container.duration != null ? '  ' + trDur(f.container.duration) : '')) : ''],
+  ].filter(r => r[1]);
+  return '<tr><td colspan="9" style="background:#101823;"><div class="mono" style="font-size:12px; white-space:pre-wrap;">'
+    + rows.map(r => '<span class="status">' + esc(r[0]) + '</span>  ' + esc(r[1])).join('\n') + '</div></td></tr>';
+}
+function renderTrFlows() {
+  const body = $('#tr-flows');
+  if (!trFlows.length) { body.innerHTML = '<tr><td colspan="9" class="status">no flows yet &mdash; open something through the proxy</td></tr>'; return; }
+  body.innerHTML = trFlows.map(f => {
+    const target = esc(f.host || f.dst_ip || '?') + (f.host && f.dst_ip ? ' <span class="status">' + esc(f.dst_ip) + '</span>' : '')
+      + '<span class="status">:' + esc(String(f.dst_port || '')) + '</span>';
+    const main = '<tr class="tr-row" data-id="' + esc(f.id) + '" style="cursor:pointer;">'
+      + '<td class="status">' + trClock(f.t_start) + '</td>'
+      + '<td>' + esc(f.client || '') + '</td><td>' + target + '</td><td>' + trClass(f) + '</td>'
+      + '<td>' + trProto(f) + '</td><td>' + trPath(f) + '</td>'
+      + '<td>' + formatBytes(f.up || 0) + ' / ' + formatBytes(f.down || 0) + '</td>'
+      + '<td>' + trDur(f.duration) + '</td><td>' + trState(f) + '</td></tr>';
+    return main + (trOpen.has(f.id) ? trDetail(f) : '');
+  }).join('');
+  body.querySelectorAll('.tr-row').forEach(r => r.addEventListener('click', () => {
+    const id = r.dataset.id; trOpen.has(id) ? trOpen.delete(id) : trOpen.add(id); renderTrFlows();
+  }));
+}
+function trBox(title, lines, color) {
+  return '<div style="flex:1; min-width:210px; border:1px solid ' + (color || '#26303e') + '; border-radius:8px; padding:8px 12px;">'
+    + '<div class="status">' + esc(title) + '</div>' + lines.map(l => '<div>' + l + '</div>').join('') + '</div>';
+}
+function renderTrSummary(s) {
+  const sb = s.singbox || {}, c = s.container || {}, j = s.join || {};
+  let sbLines, sbColor;
+  if (!sb.enabled) { sbLines = ['<span class="status">not connected &mdash; set SINGBOX_API_URL to see clients, rules and chains</span>']; }
+  else if (sb.ok === false) { sbLines = ['<span style="color:var(--bad)">Clash API error: ' + esc(sb.error || '') + '</span>']; sbColor = 'var(--bad)'; }
+  else {
+    sbLines = ['active <b>' + (sb.active || 0) + '</b> &middot; to container <b>' + (sb.to_container_open || 0) + '</b>',
+      '<span class="status">' + Object.entries(sb.by_outbound || {}).map(([k, v]) => esc(k) + ' ' + v).join(' &middot; ') + '</span>'];
+    sbColor = 'var(--ok)';
+  }
+  const acc = Object.entries(c.access || {}).map(([k, v]) => esc(k) + ' <b>' + v + '</b>').join(' &middot; ') || '<span class="status">no connections parsed yet</span>';
+  const ssLine = c.ss_open_clients != null ? '<span class="status">ss-server: ' + c.ss_open_clients + ' client / ' + (c.ss_open_remotes ?? '?') + ' remote conns open</span>' : '';
+  const joinLines = ['matched <b>' + (j.matched || 0) + '</b>'
+    + (j.not_seen ? ' &middot; <span style="color:var(--warn)">not seen <b>' + j.not_seen + '</b></span>' : '')
+    + (j.unknown ? ' &middot; <span class="status">unknown ' + j.unknown + '</span>' : '')];
+  $('#tr-pipe').innerHTML = trBox('1. sing-box →', sbLines, sbColor)
+    + trBox('2. container accepted', [acc, ssLine], Object.keys(c.access || {}).length ? 'var(--ok)' : '#26303e')
+    + trBox('3. sing-box ⇄ container', joinLines, j.not_seen ? 'var(--warn)' : '#26303e');
+  const rc = (s.recent || {}).classes || {}, rs = (s.recent || {}).services || {};
+  $('#tr-note').innerHTML = 'last 5 min &mdash; types: ' + (Object.entries(rc).map(([k, v]) => esc(k) + ' ' + v).join(', ') || '&mdash;')
+    + ' &middot; protocols: ' + (Object.entries(rs).map(([k, v]) => esc(k) + ' ' + v).join(', ') || '&mdash;')
+    + '<br>Type is a guess from the hostname; protocol is a guess from the port (TLS version / QUIC need the nfqws trace).'
+    + ' "not seen" = sing-box sent a TCP connection here, but the proxy logs have no match (UDP is not matched yet).';
+  const d = s.debug || {};
+  $('#tr-debug').textContent = 'parsed: ' + JSON.stringify(d.parsed || {}) + '\n\nunparsed lines (' + (d.unparsed || []).length + '):\n' + (d.unparsed || []).join('\n');
+}
+function renderTrHosts(list) {
+  const body = $('#tr-hosts');
+  if (!list.length) { body.innerHTML = '<tr><td colspan="7" class="status">no hosts yet</td></tr>'; return; }
+  body.innerHTML = list.slice(0, 30).map(h => '<tr><td>' + esc(h.host) + (h.is_ip ? ' <span class="status">(ip only)</span>' : '') + '</td>'
+    + '<td>' + trClass(h) + '</td><td>' + h.flows + ' <span class="status">(' + h.open + ' open)</span></td>'
+    + '<td>' + formatBytes(h.up) + ' / ' + formatBytes(h.down) + '</td>'
+    + '<td>' + h.to_container + ' / ' + h.direct_or_other + '</td>'
+    + '<td>' + (h.not_seen ? '<span style="color:var(--warn)">' + h.not_seen + '</span>' : '<span class="status">0</span>') + '</td>'
+    + '<td class="status">' + esc(h.outbounds.join(', ')) + '</td></tr>').join('');
+}
+async function loadTraffic() {
+  if ($('#page-traffic').style.display !== 'block') return;
+  const qs = new URLSearchParams({ limit: '200' });
+  const add = (k, v) => { if (v) qs.set(k, v); };
+  add('class', $('#tr-f-class').value); add('transport', $('#tr-f-transport').value);
+  add('access', $('#tr-f-access').value); add('q', $('#tr-f-q').value.trim());
+  if ($('#tr-f-open').checked) qs.set('open', '1');
+  try {
+    const [sum, hosts, flows] = await Promise.all([api('/api/flows/summary'), api('/api/flows/hosts'), api('/api/flows?' + qs)]);
+    if (sum.error) throw new Error(sum.error);
+    renderTrSummary(sum); renderTrHosts(hosts.hosts || []); trFlows = flows.flows || []; renderTrFlows();
+  } catch (e) {
+    $('#tr-pipe').innerHTML = '<span style="color:var(--bad)">' + esc(String(e.message || e)) + '</span>';
+  }
+}
+['#tr-f-class', '#tr-f-transport', '#tr-f-access', '#tr-f-open'].forEach(s => $(s).addEventListener('change', loadTraffic));
+$('#tr-f-q').addEventListener('input', () => { clearTimeout(window._trT); window._trT = setTimeout(loadTraffic, 300); });
+document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => { if (b.dataset.tab === 'traffic') loadTraffic(); }));
+setInterval(loadTraffic, 3000);
 
 setInterval(loadStatus, 5000);
 setInterval(loadLog, 5000);

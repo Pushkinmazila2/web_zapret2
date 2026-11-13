@@ -162,8 +162,10 @@ RC=0
         log "lock busy after ${BCW_LOCK_WAIT}s — another run in progress"
         exit 9
     fi
-    python3 "$BCW_MODULE" run "$SETTINGS" "$RUN_DIR"
-) >>"$BCW_LOG" 2>&1 9>"$BCW_LOCK" || RC=$?
+    # stdout (the final result JSON) is already saved as $RUN_DIR/result.json;
+    # stderr carries the live blockcheckw progress -> blockcheck.log -> docker logs
+    python3 "$BCW_MODULE" run "$SETTINGS" "$RUN_DIR" >/dev/null
+) 2>>"$BCW_LOG" 9>"$BCW_LOCK" || RC=$?
 
 log "harness finished rc=$RC"
 RESULT="$RUN_DIR/result.json"
