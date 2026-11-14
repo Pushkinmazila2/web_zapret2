@@ -179,6 +179,22 @@ conntrack `CLOSE` means "an RST was seen" but not who sent it. Telling an inject
 a server RST (by TTL) would need tcpdump and is not implemented. API: `/api/flows/intel`,
 `/api/flows?verdict=bad`.
 
+### Start-up diagnostics
+
+If the panel does not open, read what the container saw while starting (works without the panel):
+
+```
+docker exec <container> cat /var/log/webzapret/startup-report
+docker exec <container> cat /var/log/webzapret/startup.log
+```
+
+`startup.log` has a health sample (panel alive? port listening? HTTP code) at 1, 2, 3, 5, 8,
+12, 17, 25, 35, 45 and 60 s after start; if the panel dies, its last log lines are included.
+At 60 s a full report is written and printed to `docker logs` between `START-UP REPORT` markers:
+processes, listening sockets, module import check, masked environment, and the first minute of
+every service log. When the panel works, the same text is at `/api/startup`. Make sure compose
+publishes `<host-port>:<PANEL_PORT>` (the container side must equal `PANEL_PORT`).
+
 ### Strategy selection (blockcheckw)
 
 The **Strategy selection** tab integrates

@@ -91,7 +91,7 @@ COPY --from=zapret-builder /build/zapret/lua/ /opt/webzapret/lua/
 COPY --from=relay-builder /build/wz-udprelay /opt/webzapret/bin/wz-udprelay
 # config templates + scripts + panel
 COPY config/ /opt/webzapret/config/
-COPY src/entrypoint.sh src/wz-common.sh src/wz-fw.sh src/wz-svc.sh src/wz-apply.sh src/wz-test.sh src/wz-bcw.sh \
+COPY src/entrypoint.sh src/wz-common.sh src/wz-fw.sh src/wz-svc.sh src/wz-apply.sh src/wz-test.sh src/wz-bcw.sh src/wz-startup.sh \
      /opt/webzapret/scripts/
 COPY src/panel/ /opt/webzapret/panel/
 COPY src/strategy.py src/blockcheck.py src/flows.py src/nfqtrace.py src/conntrack.py src/verdict.py /opt/webzapret/scripts/

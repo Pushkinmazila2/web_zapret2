@@ -31,6 +31,7 @@ Endpoints
     GET  /api/flows                 Traffic tab: unified flow table (?limit=&class=&transport=&access=&q=&open=1)
     GET  /api/flows/hosts           Traffic tab: per-host aggregate
     GET  /api/flows/summary         Traffic tab: pipeline counters + parser debug
+    GET  /api/startup               start-up diagnostics (startup.log + one-minute report)
     GET  /api/flows/intel           Traffic tab: TSPU dossier (verdict statistics, hypotheses)
 
 CLI: python3 panel.py [--check] [--help]
@@ -1261,6 +1262,16 @@ class Handler(BaseHTTPRequestHandler):
             q = _query(self.path)
             if path == "/api/flows/summary":
                 return self._send(200, FLOWS.summary())
+            if path == "/api/startup":
+                out = {}
+                for name in ("startup.log", "startup-report"):
+                    try:
+                        with open(os.path.join(WZ_LOG, name), "r", encoding="utf-8",
+                                  errors="replace") as fh:
+                            out[name] = fh.read()[-200000:]
+                    except OSError:
+                        out[name] = ""
+                return self._send(200, out)
             if path == "/api/flows/intel":
                 return self._send(200, FLOWS.intel())
             if path == "/api/flows/hosts":
