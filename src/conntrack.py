@@ -70,6 +70,7 @@ class Conntrack(object):
         self.polls = 0
         self.acct = None                             # True/False once seen, None = unknown
         self.last_error = ""
+        self.source = ""                             # 'proc' | 'netlink'
 
     def ingest(self, text, now=None):
         """Apply one full snapshot of /proc/net/nf_conntrack."""
@@ -141,10 +142,38 @@ class Conntrack(object):
         return out
 
 
+def read_snapshot(path="/proc/net/nf_conntrack", runner=None):
+    """-> (text, source). /proc first; where the kernel/namespace does not expose it,
+    fall back to the `conntrack` tool (netlink): `conntrack -L -o extended` prints the
+    same layout, including the leading 'ipv4 2' family columns."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return fh.read(), "proc"
+    except OSError as proc_err:
+        run = runner or _run_conntrack_tool
+        text = run()
+        if text is None:
+            raise OSError("%s; and the `conntrack` tool is unavailable or failed" % proc_err)
+        return text, "netlink"
+
+
+def _run_conntrack_tool():
+    import subprocess
+    try:
+        out = subprocess.run(["conntrack", "-L", "-p", "tcp", "-o", "extended"],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0 and not out.stdout:
+        return None
+    return out.stdout.decode("utf-8", "replace")
+
+
 class ConntrackPoller(threading.Thread):
-    def __init__(self, tracker, path="/proc/net/nf_conntrack", interval=1.0):
+    def __init__(self, tracker, path="/proc/net/nf_conntrack", interval=1.0, runner=None):
         threading.Thread.__init__(self, daemon=True)
-        self.tracker, self.path, self.interval = tracker, path, interval
+        self.tracker, self.path, self.interval, self.runner = tracker, path, interval, runner
         self._stop = threading.Event()
 
     def stop(self):
@@ -153,9 +182,11 @@ class ConntrackPoller(threading.Thread):
     def run(self):
         while not self._stop.is_set():
             try:
-                with open(self.path, "r", encoding="utf-8", errors="replace") as fh:
-                    self.tracker.ingest(fh.read())
+                text, source = read_snapshot(self.path, self.runner)
+                self.tracker.source = source
+                self.tracker.ingest(text)
                 self.tracker.last_error = ""
             except Exception as exc:                  # noqa: BLE001 - keep polling
-                self.tracker.last_error = str(exc)[:160]
-            self._stop.wait(self.interval)
+                self.tracker.last_error = str(exc)[:200]
+            self._stop.wait(self.interval if self.tracker.source != "netlink"
+                            else max(self.interval, 2.0))

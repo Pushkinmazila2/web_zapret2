@@ -1219,9 +1219,11 @@ class Handler(BaseHTTPRequestHandler):
         self._guarded(self._do_POST)
 
     def _do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path == "/healthz":                        # no login: liveness for docker healthcheck
+            return self._send(200, "ok\n", "text/plain; charset=utf-8")
         if not self.authed():
             return self._auth_required()
-        path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
             with open(os.path.join(WZ_SRC, "panel/index.html"), "rb") as f:
                 body = f.read()

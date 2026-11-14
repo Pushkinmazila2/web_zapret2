@@ -502,3 +502,20 @@ class EgressVerdictTest(unittest.TestCase):
         store.feed("http", "CONNECT   Nov 13 10:44:03.958 [87]: Request (file descriptor 16): "
                    "CONNECT s.youtube.com:443 HTTP/1.1")
         self.assertNotIn("verdict", store.snapshot()[0])
+
+
+class IpLiteralTest(unittest.TestCase):
+    def test_tinyproxy_ip_host_becomes_dst_ip_and_joins_sni(self):
+        t = [time.mktime((2026, 11, 14, 12, 37, 0, 0, 0, -1))]
+        store = flows.FlowStore(clock=lambda: t[0])
+        store.feed("http", "CONNECT   Nov 14 12:36:57.552 [113]: Request (file descriptor 4): "
+                   "CONNECT 172.217.113.4:443 HTTP/1.1")
+        store.nfq.clock = lambda: time.mktime((2026, 11, 14, 12, 36, 57, 0, 0, -1))
+        for line in ("hostname: content-autofill.googleapis.com",
+                     "dpi desync src=172.22.0.4:44846 dst=172.217.113.4:443 track_direction=out "
+                     "fixed_direction=out connection_proto=tls payload_type=tls_client_hello"):
+            store.nfq.feed(line)
+        row = store.snapshot()[0]
+        self.assertEqual(row["dst_ip"], "172.217.113.4")
+        self.assertEqual(row["host"], "content-autofill.googleapis.com")
+        self.assertEqual(row["egress"]["nfq"]["sport"], 44846)

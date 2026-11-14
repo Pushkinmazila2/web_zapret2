@@ -204,6 +204,9 @@ _TP_TIME = re.compile(r"\b([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d\d:\d\d:\d\d)(?:\.(\d
 _TP_PID = re.compile(r"\[(\d+)\]:")
 
 
+_IP_LITERAL = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:]+$")
+
+
 def _split_hostport(target, default_port):
     if target.startswith("["):                       # [v6]:port
         host, _, rest = target[1:].partition("]")
@@ -443,8 +446,13 @@ class FlowStore(object):
 
     def _on_hostname(self, ev, access):
         flow = self._base("container")
-        flow.update({"t_start": ev["ts"], "host": ev["host"], "host_src": access,
-                     "dst_port": ev["port"], "access": access, "state": "seen"})
+        host, dst_ip, host_src = ev["host"], "", access
+        if _IP_LITERAL.match(host):                 # clients that resolve elsewhere send bare IPs
+            dst_ip, host = host, self.ip_host.get(host, "")
+            host_src = "sniff" if host else ""
+        flow.update({"t_start": ev["ts"], "host": host, "host_src": host_src,
+                     "dst_ip": dst_ip, "dst_port": ev["port"], "access": access,
+                     "state": "seen"})
         if ev.get("method"):
             flow["reason"] = ev["method"]
         if ev.get("fd"):
@@ -663,6 +671,7 @@ class FlowStore(object):
     def network_status(self):
         return {"conntrack": {"available": self.ct is not None and self.ct.polls > 0,
                               "acct": self.ct.acct if self.ct else None,
+                              "source": self.ct.source if self.ct else "",
                               "polls": self.ct.polls if self.ct else 0,
                               "error": self.ct.last_error if self.ct else "disabled"},
                 "nfqws": {"lines": self.nfq.lines if self.nfq else 0,
