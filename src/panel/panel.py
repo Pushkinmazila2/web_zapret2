@@ -31,6 +31,7 @@ Endpoints
     GET  /api/flows                 Traffic tab: unified flow table (?limit=&class=&transport=&access=&q=&open=1)
     GET  /api/flows/hosts           Traffic tab: per-host aggregate
     GET  /api/flows/summary         Traffic tab: pipeline counters + parser debug
+    GET  /api/flows/intel           Traffic tab: TSPU dossier (verdict statistics, hypotheses)
 
 CLI: python3 panel.py [--check] [--help]
 """
@@ -1234,12 +1235,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"mode": active_exit_mode()})
         if path == "/api/traffic":
             return self._send(200, get_traffic_stats())
-        if path in ("/api/flows", "/api/flows/hosts", "/api/flows/summary"):
+        if path in ("/api/flows", "/api/flows/hosts", "/api/flows/summary", "/api/flows/intel"):
             if FLOWS is None:
                 return self._send(503, {"ok": False, "error": "traffic module unavailable"})
             q = _query(self.path)
             if path == "/api/flows/summary":
                 return self._send(200, FLOWS.summary())
+            if path == "/api/flows/intel":
+                return self._send(200, FLOWS.intel())
             if path == "/api/flows/hosts":
                 return self._send(200, {"hosts": FLOWS.hosts_view(
                     limit=_int_arg(q, "limit", 100, 1, 500))})
@@ -1247,7 +1250,8 @@ class Handler(BaseHTTPRequestHandler):
                 limit=_int_arg(q, "limit", 200, 1, 1000),
                 cls=q.get("class", ""), transport=q.get("transport", ""),
                 access=q.get("access", ""), q=q.get("q", ""),
-                only_open=q.get("open", "") in ("1", "true"))})
+                only_open=q.get("open", "") in ("1", "true"),
+                verdict=q.get("verdict", ""))})
         if path == "/api/logs/export":
             body = export_logs().encode("utf-8")
             stamp = time.strftime("%Y%m%d-%H%M%S")

@@ -466,3 +466,39 @@ class HTTPTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EgressVerdictTest(unittest.TestCase):
+    """dante tuple + nfqws trace + conntrack -> verdict on the flow row."""
+
+    def test_reset_after_hello_is_reported(self):
+        t = [1794323305.0]
+        store = flows.FlowStore(clock=lambda: t[0])
+        store.feed("dante", "Nov 10 15:08:25 (1794323305.804211) danted[1]: info: pass(1): "
+                   "tcp/connect [: 172.22.0.1.56302 172.22.0.4.1080 -> 172.22.0.4.50042 "
+                   "173.194.18.71.443")
+        for line in ("packet: id=1 len=60 mark=0 ifin=(0) ifout=eth0(2)",
+                      "IP4: 172.22.0.4 => 173.194.18.71 proto=tcp ttl=64 sport=50042 "
+                      "dport=443 flags=S seq=5 ack_seq=0",
+                      "hostname: x.googlevideo.com",
+                      "dpi desync src=172.22.0.4:50042 dst=173.194.18.71:443 "
+                      "track_direction=out fixed_direction=out connection_proto=tls "
+                      "payload_type=tls_client_hello"):
+            store.nfq.feed(line)
+        store.ct.ingest("ipv4 2 tcp 6 9 CLOSE src=172.22.0.4 dst=173.194.18.71 sport=50042 "
+                        "dport=443 packets=5 bytes=900 src=173.194.18.71 dst=172.22.0.4 "
+                        "sport=443 dport=50042 packets=1 bytes=40 mark=0 use=1", now=t[0])
+        t[0] += 2
+        row = store.snapshot()[0]
+        self.assertEqual(row["verdict"]["code"], "reset_after_hello")
+        self.assertEqual(row["host"], "x.googlevideo.com")
+        self.assertTrue(row["timeline"])
+        intel = store.intel()
+        self.assertEqual(intel["bad"], 1)
+        json.dumps(row)                       # must be serialisable for the API
+
+    def test_no_evidence_means_no_verdict(self):
+        store = flows.FlowStore(clock=lambda: time.mktime((2026, 11, 13, 10, 44, 5, 0, 0, -1)))
+        store.feed("http", "CONNECT   Nov 13 10:44:03.958 [87]: Request (file descriptor 16): "
+                   "CONNECT s.youtube.com:443 HTTP/1.1")
+        self.assertNotIn("verdict", store.snapshot()[0])

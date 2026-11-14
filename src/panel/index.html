@@ -283,6 +283,10 @@ button[disabled] { opacity:.55; cursor:default; }
   <p class="status" id="tr-note" style="margin:8px 0 0;"></p>
 </div>
 <div class="card">
+  <label>TSPU intelligence <span class="status">&mdash; guesses from nfqws log + conntrack, not packet capture</span></label>
+  <div id="tr-intel" style="margin-top:8px;"><span class="status">loading&hellip;</span></div>
+</div>
+<div class="card">
   <label>Hosts <span class="status">&mdash; where the sing-box side and the container side meet</span></label>
   <table>
     <thead><tr><th>Host</th><th>Type (guess)</th><th>Flows</th><th>&uarr; / &darr;</th><th>To container / elsewhere</th><th>Not seen</th><th>Outbound</th></tr></thead>
@@ -304,11 +308,12 @@ button[disabled] { opacity:.55; cursor:default; }
     </select>
     <input id="tr-f-q" placeholder="host / ip / client" style="padding:4px 8px; background:#121a26; color:var(--fg); border:1px solid #33455b;">
     <label style="margin:0;"><input type="checkbox" id="tr-f-open"> only open</label>
+    <label style="margin:0;"><input type="checkbox" id="tr-f-bad"> only problems (hang / reset / cut)</label>
     <span class="status">auto: 3s</span>
   </p>
   <table>
-    <thead><tr><th>Start</th><th>Client</th><th>Target</th><th>Type</th><th>Protocol</th><th>Path</th><th>&uarr; / &darr;</th><th>Time</th><th>State</th></tr></thead>
-    <tbody id="tr-flows"><tr><td colspan="9" class="status">loading&hellip;</td></tr></tbody>
+    <thead><tr><th>Start</th><th>Client</th><th>Target</th><th>Type</th><th>Protocol</th><th>Path</th><th>&uarr; / &darr;</th><th>Time</th><th>State</th><th>Verdict</th></tr></thead>
+    <tbody id="tr-flows"><tr><td colspan="10" class="status">loading&hellip;</td></tr></tbody>
   </table>
   <details style="margin-top:10px;"><summary class="status">parser debug</summary>
     <pre class="mono scrollable" id="tr-debug" style="max-height:160px;"></pre></details>
@@ -948,6 +953,38 @@ function trState(f) {
   if (f.seen_by_container === false) s += ' <span style="color:var(--bad)" title="sing-box sent this connection to the container, but no matching line was found in its proxy logs">not seen in container</span>';
   return s;
 }
+const TR_VCOLOR = { ok: 'var(--ok)', flowing: 'var(--ok)', no_reply: 'var(--bad)', reset_after_hello: 'var(--bad)',
+  reset_mid: 'var(--bad)', stall_after_hello: 'var(--bad)', cutoff_suspected: 'var(--warn)', closed_early: 'var(--warn)' };
+function trVerdict(f) {
+  const v = f.verdict;
+  if (!v) return '<span class="status">&mdash;</span>';
+  const color = TR_VCOLOR[v.code] || '#6e7681';
+  return '<span style="color:' + color + '" title="' + esc((v.evidence || []).join('; ') + ' (confidence: ' + v.confidence + ')') + '">'
+    + esc(v.label) + (v.stalled_for ? ' ' + trDur(Math.round(v.stalled_for)) : '') + '</span>'
+    + (v.confidence === 'low' ? ' <span class="status">?</span>' : '');
+}
+function trEgress(f) {
+  const e = f.egress, v = f.verdict;
+  if (!e) return [];
+  const rows = [];
+  const n = e.nfq;
+  if (n) {
+    const tls = n.tls || {};
+    rows.push(['nfqws', (n.sni ? 'SNI ' + n.sni + '  ' : '') + (n.l7 ? n.l7 : '')
+      + (tls.versions ? '  TLS ' + tls.versions.filter(x => x !== 'GREASE').join('/') : '')
+      + (tls.alpn ? '  ALPN ' + tls.alpn.join(',') : '') + (tls.ech ? '  ECH ' + tls.ech : '')]);
+    rows.push(['what nfqws did', n.desynced
+      ? n.actions.join(' + ') + (n.splits.length ? '  split@' + n.splits[0].pos.join(',') : '')
+        + (n.fakes ? '  fake x' + n.fakes : '') + '  parts ' + n.parts + '  profile ' + (n.profile || '?')
+      : 'nothing (no desync matched)' + (n.profile ? ', profile ' + n.profile : '')]);
+    if (n.syn > 1) rows.push(['SYN seen', n.syn + ' times (retransmits: ' + n.retrans + ')']);
+  }
+  if (e.ct) rows.push(['kernel (conntrack)', 'state ' + e.ct.state + (e.ct.reply_bytes != null ? '  reply ' + formatBytes(e.ct.reply_bytes) : '  reply bytes n/a')
+    + (e.ct.unreplied ? '  UNREPLIED' : '')]);
+  if (v) rows.push(['verdict', v.label + '  [' + v.confidence + '] — ' + (v.evidence || []).join('; ')]);
+  (f.timeline || []).forEach(t => rows.push(['  +' + t.dt.toFixed(2) + 's', t.text]));
+  return rows;
+}
 function trDetail(f) {
   const rows = [
     ['client', (f.client || '?') + (f.client_port ? ':' + f.client_port : '') + (f.inbound ? '  via ' + f.inbound : '')],
@@ -957,13 +994,13 @@ function trDetail(f) {
     ['class', f.class_label || ''],
     ['container side', f.container ? (f.container.access + '  up ' + formatBytes(f.container.up) + ' / down ' + formatBytes(f.container.down)
        + (f.container.duration != null ? '  ' + trDur(f.container.duration) : '')) : ''],
-  ].filter(r => r[1]);
-  return '<tr><td colspan="9" style="background:#101823;"><div class="mono" style="font-size:12px; white-space:pre-wrap;">'
+  ].concat(trEgress(f)).filter(r => r[1]);
+  return '<tr><td colspan="10" style="background:#101823;"><div class="mono" style="font-size:12px; white-space:pre-wrap;">'
     + rows.map(r => '<span class="status">' + esc(r[0]) + '</span>  ' + esc(r[1])).join('\n') + '</div></td></tr>';
 }
 function renderTrFlows() {
   const body = $('#tr-flows');
-  if (!trFlows.length) { body.innerHTML = '<tr><td colspan="9" class="status">no flows yet &mdash; open something through the proxy</td></tr>'; return; }
+  if (!trFlows.length) { body.innerHTML = '<tr><td colspan="10" class="status">no flows yet &mdash; open something through the proxy</td></tr>'; return; }
   body.innerHTML = trFlows.map(f => {
     const target = esc(f.host || f.dst_ip || '?') + (f.host && f.dst_ip ? ' <span class="status">' + esc(f.dst_ip) + '</span>' : '')
       + '<span class="status">:' + esc(String(f.dst_port || '')) + '</span>';
@@ -972,7 +1009,7 @@ function renderTrFlows() {
       + '<td>' + esc(f.client || '') + '</td><td>' + target + '</td><td>' + trClass(f) + '</td>'
       + '<td>' + trProto(f) + '</td><td>' + trPath(f) + '</td>'
       + '<td>' + formatBytes(f.up || 0) + ' / ' + formatBytes(f.down || 0) + '</td>'
-      + '<td>' + trDur(f.duration) + '</td><td>' + trState(f) + '</td></tr>';
+      + '<td>' + trDur(f.duration) + '</td><td>' + trState(f) + '</td><td>' + trVerdict(f) + '</td></tr>';
     return main + (trOpen.has(f.id) ? trDetail(f) : '');
   }).join('');
   body.querySelectorAll('.tr-row').forEach(r => r.addEventListener('click', () => {
@@ -1009,6 +1046,25 @@ function renderTrSummary(s) {
   const d = s.debug || {};
   $('#tr-debug').textContent = 'parsed: ' + JSON.stringify(d.parsed || {}) + '\n\nunparsed lines (' + (d.unparsed || []).length + '):\n' + (d.unparsed || []).join('\n');
 }
+function renderTrIntel(i, net) {
+  const box = $('#tr-intel');
+  const ct = (net || {}).conntrack || {}, nq = (net || {}).nfqws || {};
+  let warn = '';
+  if (!ct.available) warn += '<div style="color:var(--warn)">conntrack not readable' + (ct.error ? ': ' + esc(ct.error) : '') + ' &mdash; no hang/reset verdicts</div>';
+  else if (ct.acct === false) warn += '<div style="color:var(--warn)">conntrack byte counters are off (net.netfilter.nf_conntrack_acct=0): verdicts are coarse. Enable: <code>sysctl -w net.netfilter.nf_conntrack_acct=1</code> on the host.</div>';
+  if (!nq.lines) warn += '<div class="status">nfqws.log: no lines parsed yet (no SNI / strategy info)</div>';
+  const tot = Object.entries(i.totals || {}).map(([k, v]) => esc(k) + ' <b>' + v + '</b>').join(' &middot; ') || '<span class="status">no judged connections yet</span>';
+  const hyp = (i.hypotheses || []).map(h => '<li><b>' + esc(h.text) + '</b> <span class="status">[' + esc(h.confidence) + ']</span><br><span class="status">'
+    + esc((h.evidence || []).join(' | ')) + '</span></li>').join('');
+  const strat = (i.strategies || []).map(x => '<tr><td>' + esc(x.actions) + '</td><td>' + x.n + '</td><td style="color:var(--ok)">' + x.ok + '</td><td style="color:var(--bad)">' + x.bad + '</td></tr>').join('');
+  const hosts = (i.hosts || []).filter(h => h.bad).slice(0, 8).map(h => '<tr><td>' + esc(h.host) + '</td><td>' + h.n + '</td><td style="color:var(--bad)">' + h.bad + '</td><td class="status">'
+    + esc(Object.entries(h.codes).map(([k, v]) => k + ' ' + v).join(', ')) + '</td></tr>').join('');
+  box.innerHTML = warn + '<div>judged <b>' + (i.judged || 0) + '</b>, problems <b>' + (i.bad || 0) + '</b> &mdash; ' + tot + '</div>'
+    + (hyp ? '<ul style="margin:8px 0 8px 18px; padding:0;">' + hyp + '</ul>' : '<p class="status">no conclusions yet</p>')
+    + (hosts ? '<table><thead><tr><th>Problem host</th><th>Flows</th><th>Bad</th><th>How</th></tr></thead><tbody>' + hosts + '</tbody></table>' : '')
+    + (strat ? '<table style="margin-top:8px;"><thead><tr><th>nfqws action</th><th>Flows</th><th>Good</th><th>Bad</th></tr></thead><tbody>' + strat + '</tbody></table>' : '')
+    + '<p class="status">' + esc(i.note || '') + '</p>';
+}
 function renderTrHosts(list) {
   const body = $('#tr-hosts');
   if (!list.length) { body.innerHTML = '<tr><td colspan="7" class="status">no hosts yet</td></tr>'; return; }
@@ -1026,15 +1082,16 @@ async function loadTraffic() {
   add('class', $('#tr-f-class').value); add('transport', $('#tr-f-transport').value);
   add('access', $('#tr-f-access').value); add('q', $('#tr-f-q').value.trim());
   if ($('#tr-f-open').checked) qs.set('open', '1');
+  if ($('#tr-f-bad').checked) qs.set('verdict', 'bad');
   try {
-    const [sum, hosts, flows] = await Promise.all([api('/api/flows/summary'), api('/api/flows/hosts'), api('/api/flows?' + qs)]);
+    const [sum, hosts, flows, intel] = await Promise.all([api('/api/flows/summary'), api('/api/flows/hosts'), api('/api/flows?' + qs), api('/api/flows/intel')]);
     if (sum.error) throw new Error(sum.error);
-    renderTrSummary(sum); renderTrHosts(hosts.hosts || []); trFlows = flows.flows || []; renderTrFlows();
+    renderTrIntel(intel, sum.network); renderTrSummary(sum); renderTrHosts(hosts.hosts || []); trFlows = flows.flows || []; renderTrFlows();
   } catch (e) {
     $('#tr-pipe').innerHTML = '<span style="color:var(--bad)">' + esc(String(e.message || e)) + '</span>';
   }
 }
-['#tr-f-class', '#tr-f-transport', '#tr-f-access', '#tr-f-open'].forEach(s => $(s).addEventListener('change', loadTraffic));
+['#tr-f-class', '#tr-f-transport', '#tr-f-access', '#tr-f-open', '#tr-f-bad'].forEach(s => $(s).addEventListener('change', loadTraffic));
 $('#tr-f-q').addEventListener('input', () => { clearTimeout(window._trT); window._trT = setTimeout(loadTraffic, 300); });
 document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => { if (b.dataset.tab === 'traffic') loadTraffic(); }));
 setInterval(loadTraffic, 3000);

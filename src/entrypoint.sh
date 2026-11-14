@@ -48,6 +48,10 @@ cp /opt/webzapret/config/strategies.json "$WZ_CFG/strategies.json"
 sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || \
     log_err entry "sysctl ip_forward denied (host restriction?) - upstream NAT may need it"
 sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1 || true
+# per-connection byte counters in conntrack: the Traffic tab uses them to tell
+# "server never answered" from "answered, then froze". Best effort.
+sysctl -w net.netfilter.nf_conntrack_acct=1 >/dev/null 2>&1 || \
+    echo 1 > /proc/sys/net/netfilter/nf_conntrack_acct 2>/dev/null || true
 # tun device (ioctl TUNSETIFF handled by wz-udprelay; CAP set on the binary)
 if [ ! -c /dev/net/tun ]; then
     mkdir -p /dev/net
