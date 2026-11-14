@@ -13,12 +13,12 @@ services:
     networks:
       - s-ui_s-ui
     ports:
-      - "${SS_LISTEN_PORT:-8388}:8388/tcp"
-      - "${SS_LISTEN_PORT:-8388}:8388/udp"
-      - "${SOCKS5_LISTEN_PORT:-1080}:1080/tcp"
-      - "${SOCKS5_LISTEN_PORT:-1080}:1080/udp"
-      - "${HTTP_LISTEN_PORT:-8888}:8888/tcp"
-      - "${PANEL_PORT:-8080}:8080/tcp"
+      - "${SS_LISTEN_PORT:-8388}:${SS_LISTEN_PORT:-8388}/tcp"
+      - "${SS_LISTEN_PORT:-8388}:${SS_LISTEN_PORT:-8388}/udp"
+      - "${SOCKS5_LISTEN_PORT:-1080}:${SOCKS5_LISTEN_PORT:-1080}/tcp"
+      - "${SOCKS5_LISTEN_PORT:-1080}:${SOCKS5_LISTEN_PORT:-1080}/udp"
+      - "${HTTP_LISTEN_PORT:-8888}:${HTTP_LISTEN_PORT:-8888}/tcp"
+      - "${PANEL_PORT:-8080}:${PANEL_PORT:-8080}/tcp"
     privileged: true
     cap_add:
       - NET_ADMIN
@@ -29,7 +29,7 @@ services:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.rp_filter=0
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/status"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:$${PANEL_PORT:-8080}/api/status"]
       interval: 30s
       timeout: 5s
       retries: 5
