@@ -156,6 +156,6 @@ class ConntrackPoller(threading.Thread):
                 with open(self.path, "r", encoding="utf-8", errors="replace") as fh:
                     self.tracker.ingest(fh.read())
                 self.tracker.last_error = ""
-            except OSError as exc:
+            except Exception as exc:                  # noqa: BLE001 - keep polling
                 self.tracker.last_error = str(exc)[:160]
             self._stop.wait(self.interval)
