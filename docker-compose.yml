@@ -68,8 +68,8 @@ services:
     ports:
       - "${SS_LISTEN_PORT:-8388}:8388/tcp"
       - "${SS_LISTEN_PORT:-8388}:8388/udp"
-      - "${SOCKS5_LISTEN_PORT:-1080}:1080/tcp"
-      - "${SOCKS5_LISTEN_PORT:-1080}:1080/udp"
+      - "${SOCKS5_LISTEN_PORT2:-1080}:1080/tcp"
+      - "${SOCKS5_LISTEN_PORT2:-1080}:1080/udp"
       - "${HTTP_LISTEN_PORT:-8888}:8888/tcp"
       - "${PANEL_LISTEN_PORT:-8080}:8080/tcp"
     privileged: true
