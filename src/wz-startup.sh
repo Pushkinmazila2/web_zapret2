@@ -25,7 +25,7 @@ WINDOW=${STARTUP_WINDOW:-60}
 note() { printf '[%s +%3ss] %s\n' "$(date -u +%FT%TZ)" "$(( $(date +%s) - BOOT_EPOCH ))" "$*" >> "$SLOG"; }
 mask_env() { env | sort | sed -E 's/^([A-Za-z0-9_]*(PASSWORD|PASS|SECRET|KEY|TOKEN)[A-Za-z0-9_]*)=.*/\1=***/'; }
 panel_pid() { cat "$(pidfile panel)" 2>/dev/null; }
-probe() { curl -s -m 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/status" 2>/dev/null || true; }
+probe() { curl -s -m 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/healthz" 2>/dev/null || true; }
 listens() { ss -ltn 2>/dev/null | awk -v p=":$PORT\$" '$4 ~ p {f=1} END {print f ? "yes" : "no"}'; }
 
 : > "$SLOG"
@@ -49,7 +49,7 @@ for t in 1 2 3 5 8 12 17 25 35 45 60; do
             tail -n 40 "$WZ_LOG/panel.log" 2>/dev/null | sed 's/^/    | /' >> "$SLOG"
         fi
     fi
-    note "panel: $state, port $PORT listening: $(listens), GET /api/status -> HTTP $(probe)"
+    note "panel: $state, port $PORT listening: $(listens), GET /healthz -> HTTP $(probe)"
     [ "$t" -ge "$WINDOW" ] && break
 done
 
@@ -61,7 +61,7 @@ done
     pid=$(panel_pid)
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo "panel process: alive (pid $pid)"; else echo "panel process: NOT RUNNING"; fi
     echo "panel listens on :$PORT inside container: $(listens)"
-    echo "panel GET /api/status: HTTP $(probe)  (401 = up, needs login; 200 = up)"
+    echo "panel GET /healthz: HTTP $(probe)  (200 = up; /api/* answers 401 until you log in)"
     echo "compose must publish  <host-port>:$PORT  (container side must equal PANEL_PORT=$PORT)"
     echo
     echo "== start-up notes =="
@@ -97,7 +97,14 @@ PY
     mask_env
     echo
     echo "== conntrack =="
-    echo "nf_conntrack readable: $([ -r /proc/net/nf_conntrack ] && echo yes || echo NO)  acct=$(cat /proc/sys/net/netfilter/nf_conntrack_acct 2>/dev/null || echo n/a)"
+    echo "/proc/net/nf_conntrack readable: $([ -r /proc/net/nf_conntrack ] && echo yes || echo NO)  acct=$(cat /proc/sys/net/netfilter/nf_conntrack_acct 2>/dev/null || echo n/a)"
+    ls -l /proc/net/nf_conntrack /proc/net/ip_conntrack 2>&1 | head -3
+    echo "conntrack tool: $(command -v conntrack || echo missing)"
+    if command -v conntrack >/dev/null 2>&1; then
+        echo "-- conntrack -L -p tcp -o extended | head -5  (netlink; rc shown)"
+        conntrack -L -p tcp -o extended 2>&1 | head -5; echo "rc=${PIPESTATUS[0]}"
+    fi
+    echo "modules: $(grep -E '^(nf_conntrack|nfnetlink|nf_conntrack_netlink|xt_connbytes|nfnetlink_queue) ' /proc/modules 2>/dev/null | cut -d' ' -f1 | tr '\n' ' ')"
     for f in actions panel nfqws ss-server sockd tinyproxy blockcheck; do
         echo
         echo "== log: $f.log (first minute, newest 80 lines) =="

@@ -1050,7 +1050,7 @@ function renderTrIntel(i, net) {
   const box = $('#tr-intel');
   const ct = (net || {}).conntrack || {}, nq = (net || {}).nfqws || {};
   let warn = '';
-  if (!ct.available) warn += '<div style="color:var(--warn)">conntrack not readable' + (ct.error ? ': ' + esc(ct.error) : '') + ' &mdash; no hang/reset verdicts</div>';
+  if (!ct.available) warn += '<div style="color:var(--warn)">conntrack unavailable (no /proc/net/nf_conntrack and no netlink)' + (ct.error ? ': ' + esc(ct.error) : '') + ' &mdash; no hang/reset verdicts</div>';
   else if (ct.acct === false) warn += '<div style="color:var(--warn)">conntrack byte counters are off (net.netfilter.nf_conntrack_acct=0): verdicts are coarse. Enable: <code>sysctl -w net.netfilter.nf_conntrack_acct=1</code> on the host.</div>';
   if (!nq.lines) warn += '<div class="status">nfqws.log: no lines parsed yet (no SNI / strategy info)</div>';
   const tot = Object.entries(i.totals || {}).map(([k, v]) => esc(k) + ' <b>' + v + '</b>').join(' &middot; ') || '<span class="status">no judged connections yet</span>';

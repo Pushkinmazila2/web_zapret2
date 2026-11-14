@@ -72,5 +72,21 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(len(ct.records), 0)
 
 
+class FallbackTest(unittest.TestCase):
+    def test_proc_missing_uses_tool(self):
+        text, src = conntrack.read_snapshot("/nonexistent/nf_conntrack", runner=lambda: EST % 5)
+        self.assertEqual(src, "netlink")
+        self.assertIn("ESTABLISHED", text)
+
+    def test_nothing_available(self):
+        with self.assertRaises(OSError):
+            conntrack.read_snapshot("/nonexistent/nf_conntrack", runner=lambda: None)
+
+    def test_extended_output_parses(self):
+        ct = conntrack.Conntrack()
+        ct.ingest(EST % 7, now=1.0)               # `conntrack -o extended` has the same layout
+        self.assertEqual(ct.get(50042, "173.194.18.71", 443)["reply_bytes"], 7)
+
+
 if __name__ == "__main__":
     unittest.main()

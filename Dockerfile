@@ -62,7 +62,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tinyproxy \
         redsocks \
         # networking / management
-        iptables nftables iproute2 iputils-ping procps curl ca-certificates \
+        iptables nftables iproute2 iputils-ping procps curl ca-certificates conntrack \
         util-linux tzdata libcap2-bin \
         # nfqws runtime deps (nfqws links -lmnl, -lz, -lnetfilter_queue, -lnfnetlink)
         libnetfilter-queue1 libnfnetlink0 libpcap0.8 libmnl0 zlib1g \
