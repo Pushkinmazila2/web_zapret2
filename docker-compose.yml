@@ -57,6 +57,11 @@ services:
       # --- redsocks / ss-local внутренние порты ---
       - REDSOCKS_PORT=${REDSOCKS_PORT:-1060}
       - SS_LOCAL_PORT=${SS_LOCAL_PORT:-1090}
+      # --- sing-box Clash API ---
+      - SINGBOX_API_URL=${SINGBOX_API_URL:-http://s-ui:9090}
+      - SINGBOX_API_SECRET=${SINGBOX_API_SECRET:-change-me}
+      - SINGBOX_CONTAINER_OUTBOUND=${SINGBOX_CONTAINER_OUTBOUND:-zapretDPI}
+      - SINGBOX_POLL_SECONDS=${SINGBOX_POLL_SECONDS:-3}
       # --- Тест (yt-dlp через panel Test) ---
       - TEST_YTDLP_BIN=${TEST_YTDLP_BIN:-/opt/webzapret/bin/yt-dlp}
       - TEST_YTDLP_URL=${TEST_YTDLP_URL:-https://www.youtube.com/watch?v=kJQP7kiw5Fk}
