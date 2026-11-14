@@ -9,16 +9,69 @@ services:
       - 8.8.8.8
     image: web-zapret2:stage1
     restart: unless-stopped
-    env_file: .env
+    environment:
+      # --- Ports (mirror the port-mapping defaults above) ---
+      - SS_LISTEN_PORT=${SS_LISTEN_PORT:-8388}
+      - SOCKS5_LISTEN_PORT=${SOCKS5_LISTEN_PORT:-1080}
+      - HTTP_LISTEN_PORT=${HTTP_LISTEN_PORT:-8888}
+      - PANEL_PORT=${PANEL_PORT:-8080}
+      # --- Shadowsocks ---
+      - SS_PASSWORD=${SS_PASSWORD:-change-me}
+      - SS_METHOD=${SS_METHOD:-aes-256-gcm}
+      # --- HTTP proxy auth (оставь пустым если без авторизации) ---
+      - HTTP_USER=${HTTP_USER:-}
+      - HTTP_PASSWORD=${HTTP_PASSWORD:-}
+      # --- Web-панель ---
+      - PANEL_USER=${PANEL_USER:-}
+      - PANEL_PASSWORD=${PANEL_PASSWORD:-}
+      # --- Режим выхода: direct | socks5 | ss ---
+      - EXIT_MODE=${EXIT_MODE:-direct}
+      # --- Стратегия DPI-обхода ---
+      - STRATEGY=${STRATEGY:-standard}
+      # --- Upstream SOCKS5 (для EXIT_MODE=socks5) ---
+      - UPSTREAM_SOCKS5_HOST=${UPSTREAM_SOCKS5_HOST:-}
+      - UPSTREAM_SOCKS5_PORT=${UPSTREAM_SOCKS5_PORT:-}
+      - UPSTREAM_SOCKS5_USER=${UPSTREAM_SOCKS5_USER:-}
+      - UPSTREAM_SOCKS5_PASSWORD=${UPSTREAM_SOCKS5_PASSWORD:-}
+      # --- Upstream Shadowsocks (для EXIT_MODE=ss) ---
+      - UPSTREAM_SS_HOST=${UPSTREAM_SS_HOST:-}
+      - UPSTREAM_SS_PORT=${UPSTREAM_SS_PORT:-8388}
+      - UPSTREAM_SS_PASSWORD=${UPSTREAM_SS_PASSWORD:-}
+      - UPSTREAM_SS_METHOD=${UPSTREAM_SS_METHOD:-aes-256-gcm}
+      # --- Сетевой интерфейс ---
+      - WAN_IFACE=${WAN_IFACE:-eth0}
+      # --- UDP ---
+      - UDP_PROXY=${UDP_PROXY:-relay}
+      - UDP_MARK=${UDP_MARK:-0x1}
+      - UTUN=${UTUN:-utun0}
+      - RT_TABLE_UDP=${RT_TABLE_UDP:-100}
+      # --- nfqws / firewall ---
+      - DESYNC_MARK=${DESYNC_MARK:-0x40000000}
+      - QNUM_TCP=${QNUM_TCP:-210}
+      - QNUM_UDP=${QNUM_UDP:-211}
+      - QNUM_TEST=${QNUM_TEST:-212}
+      - NFQ_TCP_PORTS=${NFQ_TCP_PORTS:-80,443}
+      - NFQ_UDP_PORTS=${NFQ_UDP_PORTS:-443}
+      - NFQWS_TCP_PKT_OUT=${NFQWS_TCP_PKT_OUT:-9}
+      - NFQWS_UDP_PKT_OUT=${NFQWS_UDP_PKT_OUT:-9}
+      # --- redsocks / ss-local внутренние порты ---
+      - REDSOCKS_PORT=${REDSOCKS_PORT:-1060}
+      - SS_LOCAL_PORT=${SS_LOCAL_PORT:-1090}
+      # --- Тест (yt-dlp через panel Test) ---
+      - TEST_YTDLP_BIN=${TEST_YTDLP_BIN:-/opt/webzapret/bin/yt-dlp}
+      - TEST_YTDLP_URL=${TEST_YTDLP_URL:-https://www.youtube.com/watch?v=kJQP7kiw5Fk}
+      - TEST_YTDLP_TIMEOUT=${TEST_YTDLP_TIMEOUT:-120}
+      - TEST_YTDLP_FORMAT=${TEST_YTDLP_FORMAT:-bv*[height<=360]+ba/b/worst}
+      - TEST_YTDLP_MAX_FILESIZE=${TEST_YTDLP_MAX_FILESIZE:-80M}
     networks:
       - s-ui_s-ui
     ports:
-      - "${SS_LISTEN_PORT:-8388}:${SS_LISTEN_PORT:-8388}/tcp"
-      - "${SS_LISTEN_PORT:-8388}:${SS_LISTEN_PORT:-8388}/udp"
-      - "${SOCKS5_LISTEN_PORT:-1080}:${SOCKS5_LISTEN_PORT:-1080}/tcp"
-      - "${SOCKS5_LISTEN_PORT:-1080}:${SOCKS5_LISTEN_PORT:-1080}/udp"
-      - "${HTTP_LISTEN_PORT:-8888}:${HTTP_LISTEN_PORT:-8888}/tcp"
-      - "${PANEL_PORT:-8080}:${PANEL_PORT:-8080}/tcp"
+      - "${SS_LISTEN_PORT:-8388}:8388/tcp"
+      - "${SS_LISTEN_PORT:-8388}:8388/udp"
+      - "${SOCKS5_LISTEN_PORT2:-1080}:1080/tcp"
+      - "${SOCKS5_LISTEN_PORT2:-1080}:1080/udp"
+      - "${HTTP_LISTEN_PORT:-8888}:8888/tcp"
+      - "${PANEL_LISTEN_PORT:-8080}:8080/tcp"
     privileged: true
     cap_add:
       - NET_ADMIN
