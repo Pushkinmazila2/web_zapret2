@@ -31,7 +31,15 @@ import time
 import urllib.error
 import urllib.request
 
+try:                                   # network-side evidence (optional modules)
+    import conntrack as ctlib
+    import nfqtrace as nfqlib
+    import verdict as verdictlib
+except ImportError:                    # pragma: no cover - packaging fallback
+    ctlib = nfqlib = verdictlib = None
+
 MATCH_WINDOW = 8.0        # s: max start-time distance when joining the two sides
+LOCAL_PORTS = (1080, 8388, 8888, 8080)   # the container's own listeners (not egress)
 LOST_AFTER = 10.0         # s: a flow sent to the container but unseen there after this
 
 # ---------------------------------------------------------------------------
@@ -180,8 +188,10 @@ def parse_ss_line(line):
     return None
 
 
-_TP_REQUEST = re.compile(r"Request \(file descriptor \d+\): ([A-Z]+) (\S+) HTTP/[\d.]+")
-_TP_TIME = re.compile(r"\b([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d\d:\d\d:\d\d)\b")
+_TP_REQUEST = re.compile(r"Request \(file descriptor (\d+)\): ([A-Z]+) (\S+) HTTP/[\d.]+")
+_TP_CONNECT = re.compile(r"\[(\d+)\]: Connect \(file descriptor (\d+)\): (\S+)")
+_TP_TIME = re.compile(r"\b([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d\d:\d\d:\d\d)(?:\.(\d{1,3}))?\b")
+_TP_PID = re.compile(r"\[(\d+)\]:")
 
 
 def _split_hostport(target, default_port):
@@ -194,17 +204,7 @@ def _split_hostport(target, default_port):
     return target, default_port
 
 
-def parse_tinyproxy_line(line, now=None):
-    """tinyproxy.log line -> event dict or None.
-
-    Format is taken from tinyproxy's documented log style (no real sample was
-    available yet) — kept tolerant; unparsed lines are counted and shown in the
-    panel's debug view so it can be corrected from real output."""
-    m = _TP_REQUEST.search(line)
-    if not m:
-        return None
-    method, target = m.group(1), m.group(2)
-    now = now or time.time()
+def _tp_time(line, now):
     ts = now
     t = _TP_TIME.search(line)
     if t:
@@ -215,17 +215,42 @@ def parse_tinyproxy_line(line, now=None):
             if ts - now > 86400:                      # log from last December
                 ts = time.mktime(time.strptime("%s %s %s %s" % (year - 1, t.group(1),
                                  t.group(2), t.group(3)), "%Y %b %d %H:%M:%S"))
+            if t.group(4):
+                ts += float("0." + t.group(4))
         except (ValueError, OverflowError):
             ts = now
+    return ts
+
+
+def parse_tinyproxy_line(line, now=None):
+    """tinyproxy.log line -> event dict or None.
+
+    Real format: 'CONNECT   Nov 13 10:44:03.957 [87]: Connect (file descriptor 16): 172.22.0.2'
+    followed by 'Request (file descriptor 16): CONNECT host:443 HTTP/1.1'. The
+    Connect line gives the client address (matched to the Request by pid+fd)."""
+    now = now or time.time()
+    c = _TP_CONNECT.search(line)
+    if c:
+        return {"kind": "client", "ts": _tp_time(line, now), "pid": c.group(1),
+                "fd": c.group(2), "client": c.group(3)}
+    m = _TP_REQUEST.search(line)
+    if not m:
+        return None
+    fd, method, target = m.group(1), m.group(2), m.group(3)
+    pid = _TP_PID.search(line)
+    ts = _tp_time(line, now)
+    base = {"kind": "request", "ts": ts, "method": method, "fd": fd,
+            "pid": pid.group(1) if pid else ""}
     if method == "CONNECT":
         host, port = _split_hostport(target, 443)
-        return {"kind": "request", "ts": ts, "method": method, "host": host, "port": port}
+        base.update({"host": host, "port": port})
+        return base
     m2 = re.match(r"^(?:https?://)?([^/:]+)(?::(\d+))?(/.*)?$", target)
     if not m2:
         return None
     port = int(m2.group(2) or (443 if target.startswith("https") else 80))
-    return {"kind": "request", "ts": ts, "method": method, "host": m2.group(1),
-            "port": port, "path": m2.group(3) or "/"}
+    base.update({"host": m2.group(1), "port": port, "path": m2.group(3) or "/"})
+    return base
 
 
 # ---------------------------------------------------------------------------
@@ -300,10 +325,14 @@ class FlowStore(object):
         self.lock = threading.RLock()
         self.flows = collections.OrderedDict()      # id -> raw flow
         self._dante_open = {}                       # (client_ip, port) -> flow id
+        self._tp_clients = {}                       # (tinyproxy pid, fd) -> client ip
         self.ip_host = {}                           # dst ip -> host (learned from sing-box)
         self.ss_gauge = {"client": None, "remote": None}
         self.parsed = collections.Counter()
         self.unparsed = collections.deque(maxlen=25)
+        self.nfq = nfqlib.NfqTrace(clock=clock) if nfqlib else None
+        self.ct = ctlib.Conntrack(clock=clock, ignore_dports=LOCAL_PORTS) if ctlib else None
+        self._snap = None                           # (signature, time, rows)
         self.clash = {"enabled": False, "ok": None, "error": "", "last_ok": 0.0, "n": 0}
         self._seq = 0
 
@@ -350,13 +379,23 @@ class FlowStore(object):
                     self.ss_gauge[ev["side"]] = ev["n"]
                 else:
                     self._on_hostname(ev, "ss")
+            elif kind == "nfq":
+                if self.nfq is not None:
+                    self.nfq.feed(line)
+                    self.parsed["nfq"] += 1
+                return
             elif kind == "http":
                 ev = parse_tinyproxy_line(line, self.clock())
                 if ev is None:
                     if "Request" in line or "CONNECT" in line:
                         self._note_unparsed(kind, line)
                     return
-                self._on_hostname(ev, "http")
+                if ev["kind"] == "client":
+                    self._tp_clients[(ev["pid"], ev["fd"])] = ev["client"]
+                    if len(self._tp_clients) > 2000:
+                        self._tp_clients.clear()
+                else:
+                    self._on_hostname(ev, "http")
             else:
                 return
             self.parsed[kind] += 1
@@ -375,7 +414,7 @@ class FlowStore(object):
             flow.update({"t_start": ev["ts"], "client": ev["client_ip"],
                          "client_port": ev["client_port"], "dst_ip": ev["dst_ip"],
                          "dst_port": ev["dst_port"], "transport": ev["transport"],
-                         "access": "socks5"})
+                         "access": "socks5", "out_port": ev["out_port"]})
             fid = self._new_id("d")
             self.flows[fid] = flow
             self._dante_open[key] = fid
@@ -389,7 +428,7 @@ class FlowStore(object):
                      "dst_ip": ev["dst_ip"], "dst_port": ev["dst_port"],
                      "transport": ev["transport"], "access": "socks5",
                      "up": ev["up"], "down": ev["down"], "duration": ev["duration"],
-                     "reason": ev["reason"], "state": "closed"})
+                     "reason": ev["reason"], "state": "closed", "out_port": ev["out_port"]})
         self._dante_open.pop(key, None)
 
     def _on_hostname(self, ev, access):
@@ -398,6 +437,8 @@ class FlowStore(object):
                      "dst_port": ev["port"], "access": access, "state": "seen"})
         if ev.get("method"):
             flow["reason"] = ev["method"]
+        if ev.get("fd"):
+            flow["client"] = self._tp_clients.get((ev.get("pid"), ev["fd"]), "")
         self.flows[self._new_id("h")] = flow
 
     def update_clash(self, connections, now=None):
@@ -479,8 +520,87 @@ class FlowStore(object):
         row["bytes_total"] = total
         return row
 
+    def _signature(self):
+        return (len(self.flows), sum(self.parsed.values()),
+                self.ct.polls if self.ct else 0, self.nfq.lines if self.nfq else 0)
+
     def snapshot(self):
-        """Unified flow list (newest first) + the join bookkeeping."""
+        """Unified flow list (newest first), cached ~1 s, with network verdicts."""
+        with self.lock:
+            now = self.clock()
+            sig = self._signature()
+            if self._snap and self._snap[0] == sig and abs(now - self._snap[1]) < 1.0:
+                return self._snap[2]
+            rows = self._build_snapshot()
+            self._snap = (sig, now, rows)
+            return rows
+
+    def _attach_egress(self, rows, now):
+        """Join rows to nfqws/conntrack records (tuple first, then dst ip:port + time)."""
+        if verdictlib is None:
+            return
+        idx_n, idx_c = {}, {}
+        if self.nfq:
+            for r in self.nfq.records.values():
+                idx_n.setdefault((r["dst_ip"], r["dst_port"]), []).append(r)
+        if self.ct:
+            with self.ct.lock:
+                for r in self.ct.records.values():
+                    idx_c.setdefault((r["dst_ip"], r["dst_port"]), []).append(r)
+        used = set()
+        for row in rows:
+            if row["transport"] != "tcp":
+                continue
+            n = c = None
+            sport = row.get("out_port")
+            ip, port = row.get("dst_ip"), row.get("dst_port")
+            if sport and ip:
+                n = self.nfq.records.get((sport, ip, port)) if self.nfq else None
+                if self.ct:
+                    with self.ct.lock:
+                        c = self.ct.records.get((sport, ip, port))
+            elif ip:
+                lo, hi = row["t_start"] - MATCH_WINDOW, row["t_start"] + MATCH_WINDOW
+                def pick(cands, used_key):
+                    best, bd = None, None
+                    for cand in cands:
+                        k = (used_key, cand["sport"], cand["dst_ip"])
+                        if k in used or not lo <= cand["first"] <= hi:
+                            continue
+                        d = abs(cand["first"] - row["t_start"])
+                        if bd is None or d < bd:
+                            best, bd = cand, d
+                    if best:
+                        used.add((used_key, best["sport"], best["dst_ip"]))
+                    return best
+                n = pick(idx_n.get((ip, port), []), "n")
+                c = pick(idx_c.get((ip, port), []), "c")
+            elif row.get("host") and self.nfq:         # hostname-only logs (ss/http)
+                lo, hi = row["t_start"] - MATCH_WINDOW, row["t_start"] + MATCH_WINDOW
+                for cand in self.nfq.records.values():
+                    k = ("n", cand["sport"], cand["dst_ip"])
+                    if cand["sni"] == row["host"] and cand["dst_port"] == port \
+                            and lo <= cand["first"] <= hi and k not in used:
+                        used.add(k)
+                        n = cand
+                        break
+                if n and self.ct:
+                    with self.ct.lock:
+                        c = self.ct.records.get((n["sport"], n["dst_ip"], n["dst_port"]))
+            if not n and not c:
+                continue
+            npub = nfqlib.NfqTrace.public(n) if n else None
+            cpub = ctlib.Conntrack.public(c) if c else None
+            row["egress"] = {"sport": (n or c)["sport"], "dst_ip": (n or c)["dst_ip"],
+                             "nfq": npub, "ct": cpub,
+                             "desynced": bool(npub and npub["desynced"]),
+                             "actions": list(npub["actions"]) if npub else []}
+            if not row.get("host") and npub and npub["sni"]:
+                row["host"], row["host_src"] = npub["sni"], "sni"
+            row["verdict"] = verdictlib.judge(cpub, npub, now)
+            row["timeline"] = verdictlib.timeline(cpub, npub, now)
+
+    def _build_snapshot(self):
         with self.lock:
             now = self.clock()
             sb = [(k, f) for k, f in self.flows.items() if f["source"] == "singbox"]
@@ -504,6 +624,7 @@ class FlowStore(object):
                                             "down": c["down"], "duration": c["duration"],
                                             "state": c["state"], "reason": c["reason"]}
                         row["access"] = c["access"]
+                        row["out_port"] = c.get("out_port")
                     elif ct_alive and flow["transport"] == "tcp" \
                             and now - flow["t_start"] > LOST_AFTER:
                         row["seen_by_container"] = False
@@ -518,9 +639,27 @@ class FlowStore(object):
                 row["container"] = None
                 rows.append(self._decorate(row))
             rows.sort(key=lambda r: r["t_start"], reverse=True)
+            self._attach_egress(rows, now)
             return rows
 
-    def flows_view(self, limit=200, cls="", transport="", access="", q="", only_open=False):
+    def intel(self):
+        """TSPU dossier aggregated from the verdicts."""
+        if verdictlib is None:
+            return {"error": "verdict module missing"}
+        data = verdictlib.build_intel(self.snapshot())
+        data["sources"] = self.network_status()
+        return data
+
+    def network_status(self):
+        return {"conntrack": {"available": self.ct is not None and self.ct.polls > 0,
+                              "acct": self.ct.acct if self.ct else None,
+                              "polls": self.ct.polls if self.ct else 0,
+                              "error": self.ct.last_error if self.ct else "disabled"},
+                "nfqws": {"lines": self.nfq.lines if self.nfq else 0,
+                          "connections": len(self.nfq.records) if self.nfq else 0}}
+
+    def flows_view(self, limit=200, cls="", transport="", access="", q="", only_open=False,
+                   verdict=""):
         rows = self.snapshot()
         q = (q or "").lower()
         out = []
@@ -532,6 +671,10 @@ class FlowStore(object):
             if access and r["access"] != access:
                 continue
             if only_open and r["state"] == "closed":
+                continue
+            if verdict == "bad" and not (r.get("verdict") or {}).get("bad"):
+                continue
+            if verdict and verdict != "bad" and (r.get("verdict") or {}).get("code") != verdict:
                 continue
             if q and q not in ("%s %s %s" % (r["host"], r["dst_ip"], r["client"])).lower():
                 continue
@@ -610,6 +753,9 @@ class FlowStore(object):
                      "not_seen": sum(1 for r in to_c if r.get("seen_by_container") is False),
                      "unknown": sum(1 for r in to_c if r.get("seen_by_container") is None)},
             "recent": {"classes": dict(by_class), "services": dict(by_service)},
+            "network": self.network_status(),
+            "verdicts": dict(collections.Counter(
+                r["verdict"]["code"] for r in recent if r.get("verdict"))),
             "debug": {"parsed": parsed, "unparsed": unparsed},
         }
 
@@ -688,6 +834,10 @@ def start_collectors(store, log_dir, singbox_url="", singbox_secret="", interval
     threads = [LogTailer(os.path.join(log_dir, "sockd.log"), "dante", store),
                LogTailer(os.path.join(log_dir, "ss-server.log"), "ss", store),
                LogTailer(os.path.join(log_dir, "tinyproxy.log"), "http", store)]
+    threads.append(LogTailer(os.path.join(log_dir, "nfqws.log"), "nfq", store,
+                             backfill=0, poll=0.1))          # no timestamps: read fast
+    if ctlib is not None and store.ct is not None:
+        threads.append(ctlib.ConntrackPoller(store.ct, interval=1.0))
     if singbox_url:
         threads.append(ClashPoller(store, singbox_url, singbox_secret, interval))
     for thread in threads:

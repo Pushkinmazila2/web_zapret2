@@ -155,8 +155,29 @@ Sources (all optional; nothing is written to disk, flows live in memory with a T
 
 The traffic *type* is a guess from the hostname (rules in `config/traffic_classes.json`,
 edit freely) and the *protocol* a guess from the port: HTTPS paths are invisible, and
-TLS version / QUIC detection needs the nfqws trace (planned). The *parser debug* box shows
+TLS version / ALPN / ECH come from the nfqws trace when a flow has one. The *parser debug* box shows
 log lines the parsers did not understand.
+
+#### Hang / reset detection and TSPU intelligence
+
+Each flow that went out through the container gets a **verdict** — `no reply to SYN`,
+`stalled after ClientHello`, `RST after ClientHello`, `RST mid-transfer`,
+`frozen after ~16-20 KB`, `ok` — plus a per-flow timeline and a **TSPU intelligence**
+card (verdict statistics per host, "SNI filter vs IP block" hypotheses, whether nfqws
+actions help). Evidence comes from two places, joined by the egress tuple
+(local port, destination IP, port) that dante, nfqws and conntrack all show:
+
+- `nfqws.log` (`--debug=1`) — SNI, TLS versions/ALPN/ECH and what nfqws did to the
+  ClientHello (fake, split positions). It has **no timestamps and no inbound packets**,
+  so lines are timed by when they are read.
+- `/proc/net/nf_conntrack` — TCP state, `[UNREPLIED]`, and reply bytes. The entrypoint
+  tries `net.netfilter.nf_conntrack_acct=1` for the byte counters; if the host forbids it,
+  verdicts degrade to state-only and the card says so.
+
+Verdicts are **heuristics with a stated confidence and evidence**, not a packet capture:
+conntrack `CLOSE` means "an RST was seen" but not who sent it. Telling an injected RST from
+a server RST (by TTL) would need tcpdump and is not implemented. API: `/api/flows/intel`,
+`/api/flows?verdict=bad`.
 
 ### Strategy selection (blockcheckw)
 
