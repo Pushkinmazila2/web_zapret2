@@ -14,6 +14,10 @@ set -u
 mkdir -p "$WZ_RUN" "$WZ_LOG" "$WZ_STATE" "$WZ_CFG"
 chown proxy:proxy "$WZ_LOG" "$WZ_RUN" 2>/dev/null || true
 
+# start-up diagnostics: startup.log + a report after the first minute (files, docker logs,
+# /api/startup). Runs beside everything below, so it works even if the panel never starts.
+/opt/webzapret/scripts/wz-startup.sh &
+
 # ---------------------------------------------------------------------------
 # 1. persistent state: env seeds state on first boot, panel/apply mutate state
 # ---------------------------------------------------------------------------
@@ -103,7 +107,7 @@ log_module entry "web_zapret2 ready. exit_mode=$EXIT_MODE strategy=$STRATEGY"
 
 # stream logs to stdout for docker logs; include the shared actions log
 tail -F "$WZ_LOG/actions.log" "$WZ_LOG/nfqws.log" "$WZ_LOG/ss-server.log" "$WZ_LOG/sockd.log" \
-    "$WZ_LOG/blockcheck.log" "$WZ_LOG/tinyproxy.log" "$WZ_LOG/panel.log" /dev/null 2>/dev/null &
+    "$WZ_LOG/blockcheck.log" "$WZ_LOG/tinyproxy.log" "$WZ_LOG/panel.log" "$WZ_LOG/startup.log" /dev/null 2>/dev/null &
 TAIL_PID=$!
 while kill -0 "$TAIL_PID" 2>/dev/null || kill -0 "$PANEL_PID" 2>/dev/null; do
     sleep 2

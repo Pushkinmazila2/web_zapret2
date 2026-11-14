@@ -31,6 +31,7 @@ Endpoints
     GET  /api/flows                 Traffic tab: unified flow table (?limit=&class=&transport=&access=&q=&open=1)
     GET  /api/flows/hosts           Traffic tab: per-host aggregate
     GET  /api/flows/summary         Traffic tab: pipeline counters + parser debug
+    GET  /api/startup               start-up diagnostics (startup.log + one-minute report)
     GET  /api/flows/intel           Traffic tab: TSPU dossier (verdict statistics, hypotheses)
 
 CLI: python3 panel.py [--check] [--help]
@@ -1197,7 +1198,27 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     # -- routes ----------------------------------------------------------
+    def _guarded(self, fn):
+        """An unhandled error must produce an HTTP 500, never an empty response."""
+        try:
+            fn()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as exc:                      # noqa: BLE001
+            import traceback
+            traceback.print_exc()
+            try:
+                self._send(500, {"ok": False, "error": "internal error: %s" % exc})
+            except Exception:                         # noqa: BLE001
+                pass
+
     def do_GET(self):
+        self._guarded(self._do_GET)
+
+    def do_POST(self):
+        self._guarded(self._do_POST)
+
+    def _do_GET(self):
         if not self.authed():
             return self._auth_required()
         path = self.path.split("?", 1)[0]
@@ -1241,6 +1262,16 @@ class Handler(BaseHTTPRequestHandler):
             q = _query(self.path)
             if path == "/api/flows/summary":
                 return self._send(200, FLOWS.summary())
+            if path == "/api/startup":
+                out = {}
+                for name in ("startup.log", "startup-report"):
+                    try:
+                        with open(os.path.join(WZ_LOG, name), "r", encoding="utf-8",
+                                  errors="replace") as fh:
+                            out[name] = fh.read()[-200000:]
+                    except OSError:
+                        out[name] = ""
+                return self._send(200, out)
             if path == "/api/flows/intel":
                 return self._send(200, FLOWS.intel())
             if path == "/api/flows/hosts":
@@ -1275,7 +1306,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"src": src, "log": tail_log(src, n)})
         return self._send(404, {"error": "not found"})
 
-    def do_POST(self):
+    def _do_POST(self):
         if not self.authed():
             return self._auth_required()
         path = self.path.split("?", 1)[0]
@@ -1382,7 +1413,12 @@ def main():
         return check()
     if bcw is not None and os.access(WZ_BCW, os.X_OK):
         threading.Thread(target=_bcw_scheduler, daemon=True).start()
-    flows_start()
+    try:
+        flows_start()
+    except Exception:                                 # noqa: BLE001 - Traffic must never block the panel
+        import traceback
+        traceback.print_exc()
+        print("panel: Traffic tab disabled (startup error above)", flush=True)
     httpd = ThreadingHTTPServer((HTTPD_HOST, HTTPD_PORT), Handler)
     print("panel listening on %s:%s" % (HTTPD_HOST, HTTPD_PORT), flush=True)
     try:

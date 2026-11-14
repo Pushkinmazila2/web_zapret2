@@ -39,7 +39,17 @@ except ImportError:                    # pragma: no cover - packaging fallback
     ctlib = nfqlib = verdictlib = None
 
 MATCH_WINDOW = 8.0        # s: max start-time distance when joining the two sides
-LOCAL_PORTS = (1080, 8388, 8888, 8080)   # the container's own listeners (not egress)
+def _local_ports():
+    """The container's own listeners (they are not egress); honours the *_LISTEN_PORT env."""
+    out = {1080, 8388, 8888, 8080}
+    for name in ("SS_LISTEN_PORT", "SOCKS5_LISTEN_PORT", "HTTP_LISTEN_PORT", "PANEL_PORT"):
+        value = os.environ.get(name, "")
+        if value.isdigit():
+            out.add(int(value))
+    return tuple(sorted(out))
+
+
+LOCAL_PORTS = _local_ports()
 LOST_AFTER = 10.0         # s: a flow sent to the container but unseen there after this
 
 # ---------------------------------------------------------------------------
